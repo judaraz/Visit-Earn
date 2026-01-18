@@ -1,1 +1,1558 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visit & Earn - Earn Money Visiting Websites</title>
+    
+    <!-- Firebase SDK v9 -->
+    <script type="module">
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBtqQvDCgqy5Tp01yajerWRSMfW6MKx-Gc",
+            authDomain: "visit-1f400.firebaseapp.com",
+            projectId: "visit-1f400",
+            storageBucket: "visit-1f400.firebasestorage.app",
+            messagingSenderId: "226827389556",
+            appId: "1:226827389556:web:b5c04719721212bc79df21"
+        };
+
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            updateDoc, 
+            collection, 
+            query, 
+            where, 
+            addDoc, 
+            setDoc,
+            serverTimestamp,
+            increment,
+            onSnapshot
+        } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Telegram Web App initialization
+        let tg = window.Telegram.WebApp;
+
+        // Global variables
+        let userData = null;
+        let appConfig = null;
+        let websites = [];
+        let visitedSites = [];
+        let withdrawalMethods = [];
+        let currentTimer = null;
+        let timerSeconds = 0;
+        let currentWebsite = null;
+        let currentBalance = 0;
+        let totalEarned = 0;
+
+        // Initialize on load
+        window.onload = async () => {
+            console.log("🚀 Visit & Earn App Loading...");
+            
+            // Initialize Telegram Web App
+            tg.expand();
+            tg.ready();
+            
+            // Get user from Telegram
+            const telegramUser = tg.initDataUnsafe.user;
+            console.log("Telegram User:", telegramUser);
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Initialize user
+            await initializeUser(telegramUser);
+            
+            // Load app data
+            await loadAppConfig();
+            
+            // Show main app
+            showMainApp();
+        };
+
+        // ===== USER MANAGEMENT =====
+        async function initializeUser(telegramUser) {
+            showLoading();
+            
+            try {
+                if (!telegramUser) {
+                    console.error("No Telegram user found");
+                    showToast("Telegram authentication required", "error");
+                    return;
+                }
+                
+                const userId = telegramUser.id.toString();
+                const userDoc = await getDoc(doc(db, "users", userId));
+                
+                if (!userDoc.exists()) {
+                    // Create new user
+                    await createNewUser(telegramUser);
+                } else {
+                    // Load existing user
+                    userData = userDoc.data();
+                    currentBalance = userData.balance || 0;
+                    totalEarned = userData.totalEarned || 0;
+                    visitedSites = userData.visitedSitesToday || [];
+                    
+                    // Check daily reset
+                    await checkDailyReset();
+                    
+                    // Update UI
+                    updateUserUI();
+                }
+                
+            } catch (error) {
+                console.error('Error initializing user:', error);
+                showToast('Error loading user data', 'error');
+            }
+            
+            hideLoading();
+        }
+
+        async function createNewUser(telegramUser) {
+            try {
+                const userId = telegramUser.id.toString();
+                
+                // Create user document
+                userData = {
+                    uid: userId,
+                    telegramId: userId,
+                    firstName: telegramUser.first_name,
+                    lastName: telegramUser.last_name || '',
+                    username: telegramUser.username || '',
+                    languageCode: telegramUser.language_code || 'en',
+                    balance: 0,
+                    totalEarned: 0,
+                    visitedSitesToday: [],
+                    lastSiteVisitDate: new Date().toISOString().split('T')[0],
+                    referrals: [],
+                    totalReferrals: 0,
+                    referralEarnings: 0,
+                    withdrawalHistory: [],
+                    createdAt: serverTimestamp(),
+                    updatedAt: serverTimestamp()
+                };
+                
+                await setDoc(doc(db, "users", userId), userData);
+                
+                currentBalance = 0;
+                totalEarned = 0;
+                visitedSites = [];
+                
+                // Update UI
+                updateUserUI();
+                
+                showToast('Welcome to Visit & Earn! 🎉', 'success');
+                
+            } catch (error) {
+                console.error('Error creating user:', error);
+                throw error;
+            }
+        }
+
+        async function checkDailyReset() {
+            try {
+                const today = new Date().toISOString().split('T')[0];
+                const lastVisitDate = userData.lastSiteVisitDate || today;
+                
+                if (lastVisitDate !== today) {
+                    // Reset visited sites for new day
+                    visitedSites = [];
+                    
+                    await updateDoc(doc(db, "users", userData.uid), {
+                        visitedSitesToday: [],
+                        lastSiteVisitDate: today
+                    });
+                    
+                    console.log("✅ Daily reset completed");
+                }
+            } catch (error) {
+                console.error('Error in daily reset:', error);
+            }
+        }
+
+        // ===== APP CONFIG =====
+        async function loadAppConfig() {
+            try {
+                const configDoc = await getDoc(doc(db, "config", "main"));
+                
+                if (configDoc.exists()) {
+                    appConfig = configDoc.data();
+                    websites = appConfig.websitesToVisit || [];
+                    withdrawalMethods = appConfig.paymentMethods || ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
+                    
+                    // Update UI with config data
+                    updateConfigUI();
+                    
+                    // Load available websites
+                    loadWebsites();
+                    
+                    console.log("✅ App config loaded");
+                } else {
+                    console.warn("No config found, using defaults");
+                    websites = [];
+                    withdrawalMethods = ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
+                }
+                
+            } catch (error) {
+                console.error('Error loading app config:', error);
+                showToast('Error loading app configuration', 'error');
+            }
+        }
+
+        function updateConfigUI() {
+            if (appConfig) {
+                // Update coins value display
+                updateCoinsValueDisplay();
+                
+                // Update minimum withdrawal
+                const minWithdrawal = appConfig.minWithdrawal || 1000;
+                document.getElementById('min-withdrawal').textContent = minWithdrawal.toLocaleString();
+            }
+        }
+
+        function updateCoinsValueDisplay() {
+            if (appConfig) {
+                const coins = appConfig.coinValueCoins || 1000;
+                const inr = appConfig.coinValueInr || 10;
+                document.getElementById('coins-value').textContent = `${coins} coins = ₹${inr}`;
+            }
+        }
+
+        function updateUserUI() {
+            if (userData) {
+                document.getElementById('user-name').textContent = userData.firstName || 'User';
+                document.getElementById('user-balance').textContent = currentBalance.toLocaleString();
+                document.getElementById('total-earned').textContent = totalEarned.toLocaleString();
+                document.getElementById('daily-progress').textContent = `${visitedSites.length}/${websites.length}`;
+                
+                // Update referral link
+                const referralLink = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/VisitEarnBot/start?ref=${userData.uid}`)}&text=Earn money by visiting websites! Use my referral link to get bonus coins!`;
+                document.getElementById('referral-link').value = referralLink;
+            }
+        }
+
+        // ===== WEBSITES =====
+        function loadWebsites() {
+            const container = document.getElementById('websites-container');
+            
+            if (websites.length === 0) {
+                container.innerHTML = `
+                    <div class="no-websites">
+                        <i class="fas fa-globe text-4xl text-gray-400 mb-4"></i>
+                        <p class="text-gray-400">No websites available at the moment</p>
+                        <p class="text-sm text-gray-500 mt-2">Check back later for new earning opportunities</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            websites.forEach((website, index) => {
+                const isVisited = visitedSites.includes(index);
+                const card = document.createElement('div');
+                card.className = `website-card ${isVisited ? 'visited' : ''}`;
+                
+                card.innerHTML = `
+                    <div class="website-icon">
+                        <i class="fas fa-globe"></i>
+                    </div>
+                    <div class="website-info">
+                        <h3 class="website-name">${website.name}</h3>
+                        <p class="website-url">${website.link.replace('https://', '').replace('www.', '')}</p>
+                        <div class="website-rewards">
+                            <span class="reward-amount">
+                                <i class="fas fa-coins"></i> ${website.reward || 10} coins
+                            </span>
+                            <span class="timer">
+                                <i class="fas fa-clock"></i> ${website.timer || 30}s
+                            </span>
+                        </div>
+                    </div>
+                    <div class="website-action">
+                        ${isVisited ? 
+                            `<button class="btn-visited" disabled>
+                                <i class="fas fa-check-circle"></i> Visited
+                            </button>` : 
+                            `<button class="btn-visit" onclick="visitWebsite(${index})">
+                                <i class="fas fa-play"></i> Visit
+                            </button>`
+                        }
+                    </div>
+                `;
+                
+                container.appendChild(card);
+            });
+        }
+
+        async function visitWebsite(index) {
+            if (!userData) return;
+            
+            const website = websites[index];
+            if (!website) return;
+            
+            // Check if already visited
+            if (visitedSites.includes(index)) {
+                showToast('You have already visited this website today', 'warning');
+                return;
+            }
+            
+            currentWebsite = website;
+            timerSeconds = website.timer || 30;
+            
+            // Show visit modal
+            showVisitModal();
+            
+            // Start timer
+            startVisitTimer();
+        }
+
+        function showVisitModal() {
+            if (!currentWebsite) return;
+            
+            document.getElementById('visit-website-name').textContent = currentWebsite.name;
+            document.getElementById('visit-website-url').textContent = currentWebsite.link;
+            document.getElementById('visit-timer').textContent = timerSeconds;
+            document.getElementById('visit-reward').textContent = currentWebsite.reward || 10;
+            
+            document.getElementById('visit-modal').classList.remove('hidden');
+            document.getElementById('main-content').classList.add('hidden');
+        }
+
+        function startVisitTimer() {
+            updateTimerDisplay();
+            
+            currentTimer = setInterval(() => {
+                timerSeconds--;
+                updateTimerDisplay();
+                
+                if (timerSeconds <= 0) {
+                    completeVisit();
+                }
+            }, 1000);
+        }
+
+        function updateTimerDisplay() {
+            document.getElementById('visit-timer').textContent = timerSeconds;
+            
+            // Update progress bar
+            const progress = ((currentWebsite.timer - timerSeconds) / currentWebsite.timer) * 100;
+            document.getElementById('timer-progress').style.width = `${progress}%`;
+        }
+
+        async function completeVisit() {
+            if (currentTimer) {
+                clearInterval(currentTimer);
+                currentTimer = null;
+            }
+            
+            // Add to visited sites
+            const websiteIndex = websites.indexOf(currentWebsite);
+            if (websiteIndex === -1) return;
+            
+            visitedSites.push(websiteIndex);
+            
+            // Update balance
+            const reward = currentWebsite.reward || 10;
+            currentBalance += reward;
+            totalEarned += reward;
+            
+            // Update Firestore
+            try {
+                await updateDoc(doc(db, "users", userData.uid), {
+                    balance: increment(reward),
+                    totalEarned: increment(reward),
+                    visitedSitesToday: visitedSites,
+                    updatedAt: serverTimestamp()
+                });
+                
+                // Update UI
+                updateUserUI();
+                loadWebsites();
+                
+                // Show success message
+                document.getElementById('visit-success').classList.remove('hidden');
+                document.getElementById('visit-in-progress').classList.add('hidden');
+                
+                // Auto-close modal after 2 seconds
+                setTimeout(() => {
+                    closeVisitModal();
+                    showToast(`🎉 +${reward} coins earned!`, 'success');
+                }, 2000);
+                
+            } catch (error) {
+                console.error('Error updating user data:', error);
+                showToast('Error updating balance', 'error');
+            }
+        }
+
+        function closeVisitModal() {
+            if (currentTimer) {
+                clearInterval(currentTimer);
+                currentTimer = null;
+            }
+            
+            document.getElementById('visit-modal').classList.add('hidden');
+            document.getElementById('main-content').classList.remove('hidden');
+            document.getElementById('visit-success').classList.add('hidden');
+            document.getElementById('visit-in-progress').classList.remove('hidden');
+            
+            currentWebsite = null;
+            timerSeconds = 0;
+        }
+
+        // ===== WITHDRAWAL =====
+        async function showWithdrawalModal() {
+            if (!appConfig) return;
+            
+            const minWithdrawal = appConfig.minWithdrawal || 1000;
+            
+            if (currentBalance < minWithdrawal) {
+                showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins`, 'warning');
+                return;
+            }
+            
+            // Load available methods
+            const methodsContainer = document.getElementById('withdrawal-methods');
+            methodsContainer.innerHTML = '';
+            
+            withdrawalMethods.forEach(method => {
+                const methodEl = document.createElement('div');
+                methodEl.className = 'withdrawal-method';
+                methodEl.innerHTML = `
+                    <div class="method-icon">
+                        ${getMethodIcon(method)}
+                    </div>
+                    <div class="method-info">
+                        <h4>${method}</h4>
+                        <p class="method-desc">${getMethodDescription(method)}</p>
+                    </div>
+                    <div class="method-select">
+                        <input type="radio" name="withdrawal-method" value="${method.toLowerCase()}">
+                    </div>
+                `;
+                methodsContainer.appendChild(methodEl);
+            });
+            
+            // Set max amount
+            document.getElementById('withdraw-amount').max = currentBalance;
+            document.getElementById('withdraw-amount').value = minWithdrawal;
+            document.getElementById('withdraw-max').textContent = currentBalance.toLocaleString();
+            
+            // Update estimated value
+            updateWithdrawalValue();
+            
+            document.getElementById('withdrawal-modal').classList.remove('hidden');
+        }
+
+        function getMethodIcon(method) {
+            const icons = {
+                'bKash': 'fas fa-mobile-alt',
+                'Nagad': 'fas fa-money-bill-wave',
+                'UPI': 'fas fa-university',
+                'Paytm': 'fas fa-rupee-sign',
+                'PayPal': 'fas fa-credit-card'
+            };
+            return `<i class="${icons[method] || 'fas fa-wallet'}"></i>`;
+        }
+
+        function getMethodDescription(method) {
+            const descs = {
+                'bKash': 'Mobile banking (Bangladesh)',
+                'Nagad': 'Mobile financial service',
+                'UPI': 'Unified Payments Interface',
+                'Paytm': 'Digital wallet & payments',
+                'PayPal': 'International payments'
+            };
+            return descs[method] || 'Digital payment method';
+        }
+
+        function updateWithdrawalValue() {
+            const amount = parseInt(document.getElementById('withdraw-amount').value) || 0;
+            if (!appConfig || amount <= 0) return;
+            
+            const coins = appConfig.coinValueCoins || 1000;
+            const inr = appConfig.coinValueInr || 10;
+            const value = (amount / coins) * inr;
+            
+            document.getElementById('estimated-value').textContent = `₹${value.toFixed(2)}`;
+        }
+
+        async function submitWithdrawal() {
+            const amount = parseInt(document.getElementById('withdraw-amount').value) || 0;
+            const method = document.querySelector('input[name="withdrawal-method"]:checked')?.value;
+            const details = document.getElementById('payment-details').value.trim();
+            
+            // Validation
+            const minWithdrawal = appConfig.minWithdrawal || 1000;
+            
+            if (amount < minWithdrawal) {
+                showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins`, 'warning');
+                return;
+            }
+            
+            if (amount > currentBalance) {
+                showToast('Insufficient balance', 'error');
+                return;
+            }
+            
+            if (!method) {
+                showToast('Please select a payment method', 'warning');
+                return;
+            }
+            
+            if (!details) {
+                showToast('Please enter payment details', 'warning');
+                return;
+            }
+            
+            showLoading();
+            
+            try {
+                // Create withdrawal request
+                const withdrawalData = {
+                    userId: userData.uid,
+                    userName: userData.firstName + (userData.lastName ? ' ' + userData.lastName : ''),
+                    telegramUsername: userData.username || '',
+                    amount: amount,
+                    method: method,
+                    paymentDetail: details,
+                    status: 'pending',
+                    requestedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp()
+                };
+                
+                await addDoc(collection(db, "withdrawals"), withdrawalData);
+                
+                // Update user balance
+                await updateDoc(doc(db, "users", userData.uid), {
+                    balance: increment(-amount),
+                    updatedAt: serverTimestamp()
+                });
+                
+                // Update local balance
+                currentBalance -= amount;
+                updateUserUI();
+                
+                // Close modal and show success
+                closeWithdrawalModal();
+                showToast('Withdrawal request submitted successfully!', 'success');
+                
+                // Show confirmation
+                showWithdrawalConfirmation(amount, method);
+                
+            } catch (error) {
+                console.error('Error submitting withdrawal:', error);
+                showToast('Error submitting withdrawal request', 'error');
+            }
+            
+            hideLoading();
+        }
+
+        function showWithdrawalConfirmation(amount, method) {
+            document.getElementById('confirmation-amount').textContent = amount.toLocaleString();
+            document.getElementById('confirmation-method').textContent = method.toUpperCase();
+            document.getElementById('withdrawal-confirmation').classList.remove('hidden');
+        }
+
+        function closeWithdrawalModal() {
+            document.getElementById('withdrawal-modal').classList.add('hidden');
+            document.getElementById('payment-details').value = '';
+        }
+
+        async function loadUserWithdrawals() {
+            try {
+                const withdrawalsQuery = query(
+                    collection(db, "withdrawals"),
+                    where("userId", "==", userData.uid)
+                );
+                
+                onSnapshot(withdrawalsQuery, (snapshot) => {
+                    const tbody = document.getElementById('withdrawals-list');
+                    tbody.innerHTML = '';
+                    
+                    if (snapshot.empty) {
+                        tbody.innerHTML = `
+                            <tr>
+                                <td colspan="4" class="text-center py-8 text-gray-400">
+                                    <i class="fas fa-wallet text-2xl mb-2"></i>
+                                    <p>No withdrawal history</p>
+                                </td>
+                            </tr>
+                        `;
+                        return;
+                    }
+                    
+                    snapshot.forEach(doc => {
+                        const data = doc.data();
+                        const date = data.requestedAt?.toDate().toLocaleDateString() || 'N/A';
+                        
+                        let statusBadge = '';
+                        if (data.status === 'approved') {
+                            statusBadge = '<span class="status-badge approved">Approved</span>';
+                        } else if (data.status === 'rejected') {
+                            statusBadge = '<span class="status-badge rejected">Rejected</span>';
+                        } else {
+                            statusBadge = '<span class="status-badge pending">Pending</span>';
+                        }
+                        
+                        tbody.innerHTML += `
+                            <tr>
+                                <td class="py-3">${data.amount.toLocaleString()} coins</td>
+                                <td class="py-3">${data.method.toUpperCase()}</td>
+                                <td class="py-3">${statusBadge}</td>
+                                <td class="py-3">${date}</td>
+                            </tr>
+                        `;
+                    });
+                });
+                
+            } catch (error) {
+                console.error('Error loading withdrawals:', error);
+            }
+        }
+
+        // ===== REFERRAL SYSTEM =====
+        function copyReferralLink() {
+            const linkInput = document.getElementById('referral-link');
+            linkInput.select();
+            linkInput.setSelectionRange(0, 99999);
+            
+            navigator.clipboard.writeText(linkInput.value)
+                .then(() => {
+                    showToast('Referral link copied to clipboard!', 'success');
+                })
+                .catch(err => {
+                    console.error('Failed to copy: ', err);
+                    showToast('Failed to copy link', 'error');
+                });
+        }
+
+        function shareReferralLink() {
+            const link = document.getElementById('referral-link').value;
+            const text = `Earn money by visiting websites! Use my referral link to get bonus coins on Visit & Earn! ${link}`;
+            
+            if (tg.isVersionAtLeast('6.0')) {
+                tg.shareUrl(text, link);
+            } else {
+                // Fallback for older versions
+                window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`, '_blank');
+            }
+        }
+
+        // ===== NAVIGATION =====
+        function showSection(sectionId) {
+            // Hide all sections
+            document.querySelectorAll('.content-section').forEach(section => {
+                section.classList.add('hidden');
+            });
+            
+            // Remove active from all nav items
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Show selected section
+            document.getElementById(`${sectionId}-section`).classList.remove('hidden');
+            
+            // Set active nav item
+            document.querySelector(`[onclick="showSection('${sectionId}')"]`).classList.add('active');
+            
+            // Update title
+            const titles = {
+                'home': 'Visit & Earn',
+                'websites': 'Earn Coins',
+                'withdraw': 'Withdraw',
+                'referral': 'Refer & Earn',
+                'history': 'History'
+            };
+            
+            document.getElementById('section-title').textContent = titles[sectionId] || 'Visit & Earn';
+        }
+
+        function showMainApp() {
+            document.getElementById('loading-screen').classList.add('hidden');
+            document.getElementById('main-app').classList.remove('hidden');
+            showSection('home');
+        }
+
+        // ===== UTILITY FUNCTIONS =====
+        function setupEventListeners() {
+            // Withdrawal amount input
+            document.getElementById('withdraw-amount').addEventListener('input', updateWithdrawalValue);
+            
+            // Telegram back button
+            tg.BackButton.onClick(() => {
+                if (document.getElementById('visit-modal').classList.contains('hidden') &&
+                    document.getElementById('withdrawal-modal').classList.contains('hidden') &&
+                    document.getElementById('withdrawal-confirmation').classList.contains('hidden')) {
+                    showSection('home');
+                } else {
+                    closeVisitModal();
+                    closeWithdrawalModal();
+                    document.getElementById('withdrawal-confirmation').classList.add('hidden');
+                }
+            });
+        }
+
+        function showLoading() {
+            document.getElementById('loading-overlay').classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').classList.add('hidden');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toast-message');
+            
+            toastMessage.textContent = message;
+            toast.className = `toast toast-${type}`;
+            
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Make functions globally available
+        window.visitWebsite = visitWebsite;
+        window.closeVisitModal = closeVisitModal;
+        window.showWithdrawalModal = showWithdrawalModal;
+        window.closeWithdrawalModal = closeWithdrawalModal;
+        window.updateWithdrawalValue = updateWithdrawalValue;
+        window.submitWithdrawal = submitWithdrawal;
+        window.copyReferralLink = copyReferralLink;
+        window.shareReferralLink = shareReferralLink;
+        window.showSection = showSection;
+
+        console.log("✅ Visit & Earn App Ready");
+    </script>
+    
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff;
+            min-height: 100vh;
+        }
+        
+        .app-container {
+            background: white;
+            color: #1a1a1a;
+            min-height: 100vh;
+            border-radius: 24px 24px 0 0;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 16px;
+            position: relative;
+        }
+        
+        .user-avatar {
+            width: 48px;
+            height: 48px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        
+        .balance-card {
+            background: white;
+            color: #1a1a1a;
+            border-radius: 16px;
+            padding: 20px;
+            margin-top: -30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            position: relative;
+            z-index: 1;
+        }
+        
+        .nav-bar {
+            display: flex;
+            justify-content: space-around;
+            padding: 12px 0;
+            background: white;
+            border-top: 1px solid #e5e7eb;
+            position: sticky;
+            bottom: 0;
+            left: 0;
+            right: 0;
+        }
+        
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #9ca3af;
+            padding: 8px 12px;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+        
+        .nav-item.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .nav-item i {
+            font-size: 20px;
+            margin-bottom: 4px;
+        }
+        
+        .nav-item span {
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .website-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 16px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            transition: all 0.3s ease;
+        }
+        
+        .website-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.1);
+        }
+        
+        .website-card.visited {
+            opacity: 0.7;
+            background: #f9fafb;
+        }
+        
+        .website-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            margin-right: 16px;
+        }
+        
+        .website-info {
+            flex: 1;
+        }
+        
+        .website-name {
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 4px;
+        }
+        
+        .website-url {
+            color: #6b7280;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .website-rewards {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .reward-amount, .timer {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            color: #667eea;
+            font-weight: 500;
+        }
+        
+        .btn-visit {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-visit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-visited {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: not-allowed;
+        }
+        
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 16px;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 24px;
+            width: 100%;
+            max-width: 400px;
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s ease;
+        }
+        
+        @keyframes slideUp {
+            from {
+                transform: translateY(50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .timer-circle {
+            width: 120px;
+            height: 120px;
+            border: 8px solid #e5e7eb;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .withdrawal-method {
+            display: flex;
+            align-items: center;
+            padding: 16px;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .withdrawal-method:hover {
+            border-color: #667eea;
+            background: #f9fafb;
+        }
+        
+        .method-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            margin-right: 16px;
+        }
+        
+        .method-info {
+            flex: 1;
+        }
+        
+        .method-info h4 {
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 4px;
+        }
+        
+        .method-desc {
+            color: #6b7280;
+            font-size: 12px;
+        }
+        
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .status-badge.pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .status-badge.approved {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .status-badge.rejected {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            z-index: 1001;
+            transition: transform 0.3s ease;
+        }
+        
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+        
+        .toast-error {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+        
+        .toast-warning {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        }
+        
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+        
+        .loader {
+            width: 60px;
+            height: 60px;
+            border: 4px solid #e5e7eb;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .content-section {
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .no-websites {
+            text-align: center;
+            padding: 60px 20px;
+        }
+        
+        .progress-bar {
+            height: 6px;
+            background: #e5e7eb;
+            border-radius: 3px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <!-- Toast Notification -->
+    <div id="toast" class="toast">
+        <i class="fas fa-check-circle mr-2"></i>
+        <span id="toast-message">Operation successful!</span>
+    </div>
+    
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loader"></div>
+    </div>
+    
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-overlay">
+        <div class="text-center">
+            <div class="loader mb-6"></div>
+            <h2 class="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Visit & Earn</h2>
+            <p class="text-gray-600">Loading your earning dashboard...</p>
+        </div>
+    </div>
+    
+    <!-- Main App -->
+    <div id="main-app" class="app-container hidden">
+        <!-- Header -->
+        <div class="header">
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h1 id="section-title" class="text-2xl font-bold">Visit & Earn</h1>
+                    <p class="text-sm opacity-90">Earn money visiting websites</p>
+                </div>
+                <div class="user-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+            </div>
+            
+            <!-- Balance Card -->
+            <div class="balance-card">
+                <div class="flex justify-between items-center mb-4">
+                    <div>
+                        <p class="text-sm text-gray-600">Available Balance</p>
+                        <h2 class="text-3xl font-bold text-gray-900" id="user-balance">0</h2>
+                        <p class="text-sm text-gray-600 mt-1" id="coins-value">1000 coins = ₹10</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-sm text-gray-600">Total Earned</p>
+                        <p class="text-xl font-bold text-gray-900" id="total-earned">0</p>
+                    </div>
+                </div>
+                
+                <div class="flex gap-3">
+                    <button onclick="showWithdrawalModal()" class="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-xl font-bold">
+                        <i class="fas fa-wallet mr-2"></i>Withdraw
+                    </button>
+                    <button onclick="showSection('referral')" class="flex-1 border-2 border-purple-600 text-purple-600 py-3 rounded-xl font-bold">
+                        <i class="fas fa-share-alt mr-2"></i>Refer
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Main Content -->
+        <div id="main-content" class="p-4 pb-24">
+            <!-- Home Section -->
+            <div id="home-section" class="content-section">
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold mb-4">Hello, <span id="user-name">User</span>! 👋</h3>
+                    <p class="text-gray-600 mb-6">Visit websites and earn coins. Convert coins to real money!</p>
+                    
+                    <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-2xl p-4 mb-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="font-bold text-gray-900">Daily Progress</span>
+                            <span id="daily-progress" class="font-bold text-purple-600">0/0</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="daily-progress-bar" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                        <p class="text-sm text-gray-600 mt-2">Visit all websites daily to maximize earnings</p>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <div class="w-12 h-12 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center mb-3">
+                                <i class="fas fa-coins text-white text-xl"></i>
+                            </div>
+                            <p class="text-sm text-gray-600">Minimum Withdrawal</p>
+                            <p class="text-lg font-bold text-gray-900" id="min-withdrawal">1,000</p>
+                        </div>
+                        
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <div class="w-12 h-12 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl flex items-center justify-center mb-3">
+                                <i class="fas fa-gift text-white text-xl"></i>
+                            </div>
+                            <p class="text-sm text-gray-600">Referral Bonus</p>
+                            <p class="text-lg font-bold text-gray-900">100 coins</p>
+                        </div>
+                    </div>
+                    
+                    <button onclick="showSection('websites')" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-4 rounded-2xl font-bold text-lg mb-4">
+                        <i class="fas fa-play-circle mr-2"></i>Start Earning Now
+                    </button>
+                    
+                    <button onclick="showSection('history')" class="w-full border-2 border-gray-300 text-gray-700 py-4 rounded-2xl font-bold">
+                        <i class="fas fa-history mr-2"></i>View History
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Websites Section -->
+            <div id="websites-section" class="content-section hidden">
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold mb-2">Available Websites</h3>
+                    <p class="text-gray-600 mb-6">Visit each website once daily to earn coins</p>
+                    
+                    <div id="websites-container">
+                        <!-- Websites will be loaded here -->
+                        <div class="no-websites">
+                            <i class="fas fa-globe text-4xl text-gray-400 mb-4"></i>
+                            <p class="text-gray-400">Loading websites...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Withdraw Section -->
+            <div id="withdraw-section" class="content-section hidden">
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold mb-2">Withdraw Earnings</h3>
+                    <p class="text-gray-600 mb-6">Convert your coins to real money</p>
+                    
+                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
+                        <div class="flex items-center mb-3">
+                            <div class="w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center mr-3">
+                                <i class="fas fa-wallet text-white"></i>
+                            </div>
+                            <div>
+                                <p class="font-bold text-gray-900">Available Balance</p>
+                                <p class="text-2xl font-bold text-gray-900" id="withdraw-balance">0 coins</p>
+                            </div>
+                        </div>
+                        <p class="text-sm text-gray-600">Minimum withdrawal: <span id="min-withdraw-amount">1,000</span> coins</p>
+                    </div>
+                    
+                    <div class="bg-gray-50 rounded-2xl p-4 mb-6">
+                        <h4 class="font-bold mb-4">Withdrawal History</h4>
+                        <div class="overflow-x-auto">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="text-left text-sm text-gray-600">
+                                        <th class="pb-2">Amount</th>
+                                        <th class="pb-2">Method</th>
+                                        <th class="pb-2">Status</th>
+                                        <th class="pb-2">Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="withdrawals-list">
+                                    <tr>
+                                        <td colspan="4" class="text-center py-8 text-gray-400">
+                                            <i class="fas fa-wallet text-2xl mb-2"></i>
+                                            <p>No withdrawal history</p>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <button onclick="showWithdrawalModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-4 rounded-2xl font-bold text-lg">
+                        <i class="fas fa-money-bill-wave mr-2"></i>Withdraw Now
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Referral Section -->
+            <div id="referral-section" class="content-section hidden">
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold mb-2">Refer & Earn</h3>
+                    <p class="text-gray-600 mb-6">Invite friends and earn bonus coins</p>
+                    
+                    <div class="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100 rounded-2xl p-4 mb-6">
+                        <div class="flex items-center mb-4">
+                            <div class="w-12 h-12 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl flex items-center justify-center mr-3">
+                                <i class="fas fa-gift text-white text-xl"></i>
+                            </div>
+                            <div>
+                                <p class="font-bold text-gray-900">Earn 100 coins per referral</p>
+                                <p class="text-sm text-gray-600">Your friend gets 50 coins bonus too!</p>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <p class="text-sm text-gray-600 mb-2">Your Referral Link:</p>
+                            <div class="flex">
+                                <input type="text" id="referral-link" readonly 
+                                       class="flex-1 border border-gray-300 rounded-l-xl p-3 text-sm">
+                                <button onclick="copyReferralLink()" class="bg-gray-800 text-white px-4 rounded-r-xl">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <button onclick="shareReferralLink()" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-xl font-bold">
+                            <i class="fas fa-share-alt mr-2"></i>Share Referral Link
+                        </button>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <p class="text-sm text-gray-600">Total Referrals</p>
+                            <p class="text-2xl font-bold text-gray-900" id="total-referrals">0</p>
+                        </div>
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <p class="text-sm text-gray-600">Referral Earnings</p>
+                            <p class="text-2xl font-bold text-gray-900" id="referral-earnings">0 coins</p>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-yellow-50 border border-yellow-100 rounded-2xl p-4">
+                        <div class="flex">
+                            <i class="fas fa-lightbulb text-yellow-500 text-xl mr-3 mt-1"></i>
+                            <div>
+                                <p class="font-bold text-gray-900 mb-2">Pro Tip</p>
+                                <p class="text-sm text-gray-600">Share your referral link on social media to maximize earnings. More referrals = more coins!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- History Section -->
+            <div id="history-section" class="content-section hidden">
+                <div class="mb-6">
+                    <h3 class="text-lg font-bold mb-2">Earning History</h3>
+                    <p class="text-gray-600 mb-6">Track your earnings and activities</p>
+                    
+                    <div class="space-y-4">
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <h4 class="font-bold mb-3">Today's Earnings</h4>
+                            <div class="space-y-2" id="today-earnings">
+                                <div class="text-center py-8 text-gray-400">
+                                    <i class="fas fa-coins text-2xl mb-2"></i>
+                                    <p>No earnings today</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-50 rounded-2xl p-4">
+                            <h4 class="font-bold mb-3">Recent Withdrawals</h4>
+                            <div id="recent-withdrawals">
+                                <div class="text-center py-8 text-gray-400">
+                                    <i class="fas fa-wallet text-2xl mb-2"></i>
+                                    <p>No withdrawals yet</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Navigation Bar -->
+        <div class="nav-bar">
+            <button onclick="showSection('home')" class="nav-item active">
+                <i class="fas fa-home"></i>
+                <span>Home</span>
+            </button>
+            <button onclick="showSection('websites')" class="nav-item">
+                <i class="fas fa-globe"></i>
+                <span>Earn</span>
+            </button>
+            <button onclick="showSection('withdraw')" class="nav-item">
+                <i class="fas fa-wallet"></i>
+                <span>Withdraw</span>
+            </button>
+            <button onclick="showSection('referral')" class="nav-item">
+                <i class="fas fa-users"></i>
+                <span>Refer</span>
+            </button>
+            <button onclick="showSection('history')" class="nav-item">
+                <i class="fas fa-history"></i>
+                <span>History</span>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Visit Website Modal -->
+    <div id="visit-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="p-6">
+                <div id="visit-in-progress">
+                    <div class="text-center mb-8">
+                        <div class="timer-circle mb-6">
+                            <span id="visit-timer" class="text-4xl font-bold">30</span>
+                        </div>
+                        <h3 class="text-2xl font-bold mb-2" id="visit-website-name">Website Name</h3>
+                        <p class="text-gray-600" id="visit-website-url">website.com</p>
+                    </div>
+                    
+                    <div class="mb-8">
+                        <div class="flex justify-between mb-2">
+                            <span class="text-sm text-gray-600">Progress</span>
+                            <span class="text-sm font-bold" id="timer-percentage">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="timer-progress" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-2xl p-4 mb-6">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <p class="text-sm text-gray-600">You will earn</p>
+                                <p class="text-2xl font-bold text-gray-900" id="visit-reward">10 coins</p>
+                            </div>
+                            <div class="w-12 h-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center">
+                                <i class="fas fa-coins text-white text-xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <p class="text-sm text-gray-600 text-center mb-6">
+                        Please wait while we track your visit. Do not close this window.
+                    </p>
+                    
+                    <button onclick="closeVisitModal()" class="w-full border-2 border-gray-300 text-gray-700 py-3 rounded-xl font-bold">
+                        Cancel Visit
+                    </button>
+                </div>
+                
+                <div id="visit-success" class="hidden text-center">
+                    <div class="w-20 h-20 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <i class="fas fa-check text-white text-3xl"></i>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-2">Visit Completed!</h3>
+                    <p class="text-gray-600 mb-6">Coins have been added to your balance</p>
+                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
+                        <p class="text-sm text-gray-600 mb-1">Earned</p>
+                        <p class="text-3xl font-bold text-gray-900" id="earned-amount">10 coins</p>
+                    </div>
+                    <button onclick="closeVisitModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold">
+                        Continue Earning
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Withdrawal Modal -->
+    <div id="withdrawal-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="p-6">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-2xl font-bold">Withdraw Coins</h3>
+                    <button onclick="closeWithdrawalModal()" class="text-gray-400 hover:text-gray-600">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+                
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Amount (coins)</label>
+                    <div class="relative">
+                        <input type="number" id="withdraw-amount" min="1000" 
+                               class="w-full border border-gray-300 rounded-xl p-4 text-lg font-bold" 
+                               placeholder="1000">
+                        <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-600">
+                            Max: <span id="withdraw-max">0</span>
+                        </div>
+                    </div>
+                    <p class="text-sm text-gray-500 mt-2">Min: <span id="min-withdraw-modal">1,000</span> coins</p>
+                </div>
+                
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Payment Method</label>
+                    <div id="withdrawal-methods">
+                        <!-- Methods will be loaded here -->
+                    </div>
+                </div>
+                
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Payment Details</label>
+                    <textarea id="payment-details" rows="3" 
+                              class="w-full border border-gray-300 rounded-xl p-4"
+                              placeholder="Enter your account number, UPI ID, etc."></textarea>
+                    <p class="text-sm text-gray-500 mt-2">Enter exact payment details for the selected method</p>
+                </div>
+                
+                <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-2xl p-4 mb-6">
+                    <p class="text-sm text-gray-600 mb-1">Estimated Value</p>
+                    <p class="text-2xl font-bold text-gray-900" id="estimated-value">₹0.00</p>
+                    <p class="text-xs text-gray-500 mt-2">Based on current conversion rate</p>
+                </div>
+                
+                <button onclick="submitWithdrawal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-4 rounded-2xl font-bold text-lg">
+                    <i class="fas fa-paper-plane mr-2"></i>Submit Withdrawal Request
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Withdrawal Confirmation -->
+    <div id="withdrawal-confirmation" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="p-6 text-center">
+                <div class="w-20 h-20 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <i class="fas fa-check text-white text-3xl"></i>
+                </div>
+                <h3 class="text-2xl font-bold mb-2">Request Submitted!</h3>
+                <p class="text-gray-600 mb-6">Your withdrawal request has been received</p>
+                
+                <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
+                    <p class="text-sm text-gray-600 mb-1">Amount</p>
+                    <p class="text-3xl font-bold text-gray-900" id="confirmation-amount">0 coins</p>
+                    <p class="text-sm text-gray-600 mt-2">Method: <span id="confirmation-method" class="font-bold">BKASH</span></p>
+                </div>
+                
+                <p class="text-sm text-gray-600 mb-6">
+                    Your request will be processed within 24-48 hours. You will receive a notification when it's completed.
+                </p>
+                
+                <button onclick="document.getElementById('withdrawal-confirmation').classList.add('hidden')" 
+                        class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold">
+                    Done
+                </button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
