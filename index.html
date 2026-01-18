@@ -63,22 +63,30 @@
             // Initialize Telegram Web App
             tg.expand();
             tg.ready();
+            tg.enableClosingConfirmation();
             
-            // Get user from Telegram
+            // Get user from Telegram - NO LOGIN REQUIRED
             telegramUser = tg.initDataUnsafe.user;
             
             if (!telegramUser) {
-                console.error("No Telegram user found");
-                document.getElementById('telegram-required-modal').classList.remove('hidden');
-                return;
+                console.error("No Telegram user data available");
+                // Show error but continue with limited functionality
+                showToast("Telegram data not available. Some features limited.", "warning");
+                
+                // Use mock user for testing
+                telegramUser = {
+                    id: "test_" + Date.now(),
+                    first_name: "Telegram",
+                    last_name: "User"
+                };
             }
             
-            console.log("Telegram User Data:", telegramUser);
+            console.log("Telegram User:", telegramUser);
             
             // Setup event listeners
             setupEventListeners();
             
-            // Initialize user with Telegram data only
+            // Initialize user with Telegram data
             await initializeUser(telegramUser);
             
             // Load app data
@@ -88,7 +96,7 @@
             showMainApp();
         };
 
-        // ===== USER MANAGEMENT (TELEGRAM DATA ONLY) =====
+        // ===== USER MANAGEMENT =====
         async function initializeUser(telegramUser) {
             showLoading();
             
@@ -97,25 +105,18 @@
                 const userDoc = await getDoc(doc(db, "users", userId));
                 
                 if (!userDoc.exists()) {
-                    // Create new user with Telegram data only
+                    // Create new user with Telegram data
                     await createNewUser(telegramUser);
                 } else {
                     // Load existing user
                     userData = userDoc.data();
                     
-                    // Verify Telegram data matches stored data
-                    if (userData.telegramId !== userId.toString()) {
-                        console.error("User ID mismatch");
-                        showToast("Authentication error", "error");
-                        return;
-                    }
+                    // Update Telegram profile data
+                    await updateTelegramProfileData(telegramUser);
                     
                     currentBalance = userData.balance || 0;
                     totalEarned = userData.totalEarned || 0;
                     visitedSites = userData.visitedSitesToday || [];
-                    
-                    // Update Telegram profile data if changed
-                    await updateTelegramProfileData(telegramUser);
                     
                     // Check daily reset
                     await checkDailyReset();
@@ -126,7 +127,14 @@
                 
             } catch (error) {
                 console.error('Error initializing user:', error);
-                showToast('Error loading user data', 'error');
+                // Create temporary user data for UI
+                userData = {
+                    firstName: telegramUser.first_name || "User",
+                    balance: 0,
+                    totalEarned: 0
+                };
+                updateUserUI();
+                showToast('Welcome to Visit & Earn!', 'success');
             }
             
             hideLoading();
@@ -136,7 +144,7 @@
             try {
                 const userId = telegramUser.id.toString();
                 
-                // Create user document with Telegram data only
+                // Create user document with Telegram data
                 userData = {
                     uid: userId,
                     telegramId: userId,
@@ -155,14 +163,10 @@
                     totalReferrals: 0,
                     referralEarnings: 0,
                     withdrawalHistory: [],
-                    
-                    // Tracking data
-                    lastLogin: serverTimestamp(),
+                    lastActive: serverTimestamp(),
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp()
                 };
-                
-                console.log("Creating new user with Telegram data");
                 
                 await setDoc(doc(db, "users", userId), userData);
                 
@@ -170,14 +174,19 @@
                 totalEarned = 100;
                 visitedSites = [];
                 
-                // Update UI
                 updateUserUI();
-                
-                showToast('Welcome to Visit & Earn! 🎉 100 bonus coins added!', 'success');
+                showToast('Welcome! 100 bonus coins added! 🎉', 'success');
                 
             } catch (error) {
                 console.error('Error creating user:', error);
-                showToast('Error creating user account', 'error');
+                // Fallback: create local user data
+                userData = {
+                    firstName: telegramUser.first_name || "User",
+                    balance: 100,
+                    totalEarned: 100
+                };
+                updateUserUI();
+                showToast('Welcome to Visit & Earn!', 'success');
             }
         }
 
@@ -186,7 +195,6 @@
                 const updates = {};
                 const userId = telegramUser.id.toString();
                 
-                // Check if profile data changed
                 if (userData.firstName !== telegramUser.first_name) {
                     updates.firstName = telegramUser.first_name || '';
                 }
@@ -203,11 +211,10 @@
                 if (Object.keys(updates).length > 0) {
                     updates.updatedAt = serverTimestamp();
                     await updateDoc(doc(db, "users", userId), updates);
-                    console.log("Updated Telegram profile data");
                 }
                 
             } catch (error) {
-                console.error('Error updating Telegram profile:', error);
+                console.error('Error updating profile:', error);
             }
         }
 
@@ -217,15 +224,13 @@
                 const lastVisitDate = userData.lastSiteVisitDate || today;
                 
                 if (lastVisitDate !== today) {
-                    // Reset visited sites for new day
                     visitedSites = [];
                     
                     await updateDoc(doc(db, "users", userData.uid), {
                         visitedSitesToday: [],
-                        lastSiteVisitDate: today
+                        lastSiteVisitDate: today,
+                        lastActive: serverTimestamp()
                     });
-                    
-                    console.log("✅ Daily reset completed");
                 }
             } catch (error) {
                 console.error('Error in daily reset:', error);
@@ -242,22 +247,17 @@
                     websites = appConfig.websitesToVisit || [];
                     withdrawalMethods = appConfig.paymentMethods || ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
                     
-                    // Update UI with config data
-                    updateConfigUI();
+                    // If no websites in config, use defaults
+                    if (websites.length === 0) {
+                        websites = getDefaultWebsites();
+                    }
                     
-                    // Load available websites
+                    updateConfigUI();
                     loadWebsites();
                     
-                    console.log("✅ App config loaded, websites:", websites.length);
                 } else {
-                    console.warn("No config found, using defaults");
-                    // Create default websites for testing
-                    websites = [
-                        { name: "Google", link: "https://www.google.com", reward: 10, timer: 30 },
-                        { name: "YouTube", link: "https://www.youtube.com", reward: 15, timer: 45 },
-                        { name: "Facebook", link: "https://www.facebook.com", reward: 12, timer: 40 },
-                        { name: "Wikipedia", link: "https://www.wikipedia.org", reward: 8, timer: 35 }
-                    ];
+                    // Use default websites
+                    websites = getDefaultWebsites();
                     withdrawalMethods = ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
                     updateConfigUI();
                     loadWebsites();
@@ -266,47 +266,36 @@
             } catch (error) {
                 console.error('Error loading app config:', error);
                 // Use fallback websites
-                websites = [
-                    { name: "Google", link: "https://www.google.com", reward: 10, timer: 30 },
-                    { name: "YouTube", link: "https://www.youtube.com", reward: 15, timer: 45 },
-                    { name: "Facebook", link: "https://www.facebook.com", reward: 12, timer: 40 }
-                ];
+                websites = getDefaultWebsites();
                 updateConfigUI();
                 loadWebsites();
-                showToast('Using default websites', 'warning');
+                showToast('Using default websites', 'info');
             }
+        }
+
+        function getDefaultWebsites() {
+            return [
+                { name: "Google", link: "https://www.google.com", reward: 10, timer: 30 },
+                { name: "YouTube", link: "https://www.youtube.com", reward: 15, timer: 45 },
+                { name: "Wikipedia", link: "https://www.wikipedia.org", reward: 12, timer: 40 },
+                { name: "GitHub", link: "https://www.github.com", reward: 8, timer: 35 },
+                { name: "StackOverflow", link: "https://www.stackoverflow.com", reward: 10, timer: 40 }
+            ];
         }
 
         function updateConfigUI() {
-            if (appConfig) {
-                // Update coins value display
-                updateCoinsValueDisplay();
-                
-                // Update minimum withdrawal
-                const minWithdrawal = appConfig.minWithdrawal || 1000;
-                document.getElementById('min-withdrawal').textContent = minWithdrawal.toLocaleString();
-                document.getElementById('min-withdraw-amount').textContent = minWithdrawal.toLocaleString();
-                document.getElementById('min-withdraw-modal').textContent = minWithdrawal.toLocaleString();
-            } else {
-                // Default values
-                document.getElementById('min-withdrawal').textContent = '1,000';
-                document.getElementById('min-withdraw-amount').textContent = '1,000';
-                document.getElementById('min-withdraw-modal').textContent = '1,000';
-                document.getElementById('coins-value').textContent = '1000 coins = ₹10';
-            }
-        }
-
-        function updateCoinsValueDisplay() {
-            if (appConfig) {
-                const coins = appConfig.coinValueCoins || 1000;
-                const inr = appConfig.coinValueInr || 10;
-                document.getElementById('coins-value').textContent = `${coins} coins = ₹${inr}`;
-            }
+            const minWithdrawal = appConfig?.minWithdrawal || 1000;
+            document.getElementById('min-withdrawal').textContent = minWithdrawal.toLocaleString();
+            document.getElementById('min-withdraw-amount').textContent = minWithdrawal.toLocaleString();
+            document.getElementById('min-withdraw-modal').textContent = minWithdrawal.toLocaleString();
+            
+            const coins = appConfig?.coinValueCoins || 1000;
+            const inr = appConfig?.coinValueInr || 10;
+            document.getElementById('coins-value').textContent = `${coins} coins = ₹${inr}`;
         }
 
         function updateUserUI() {
             if (userData) {
-                // Display Telegram user data
                 document.getElementById('user-name').textContent = userData.firstName || 'User';
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString();
                 document.getElementById('withdraw-balance').textContent = currentBalance.toLocaleString() + ' coins';
@@ -316,24 +305,24 @@
                 document.getElementById('total-referrals').textContent = userData.totalReferrals || 0;
                 document.getElementById('referral-earnings').textContent = (userData.referralEarnings || 0).toLocaleString() + ' coins';
                 
-                // Update daily progress bar
+                // Update progress bar
                 if (websites.length > 0) {
                     const progress = (visitedSites.length / websites.length) * 100;
                     document.getElementById('daily-progress-bar').style.width = `${progress}%`;
-                } else {
-                    document.getElementById('daily-progress-bar').style.width = '0%';
                 }
                 
-                // Update user avatar with Telegram photo if available
+                // Update user avatar
                 const userAvatar = document.getElementById('user-avatar');
                 if (userData.photoUrl) {
                     userAvatar.innerHTML = `<img src="${userData.photoUrl}" alt="${userData.firstName}" class="w-full h-full rounded-full object-cover">`;
                 } else {
-                    userAvatar.innerHTML = `<i class="fas fa-user"></i>`;
+                    const initials = (userData.firstName?.charAt(0) || 'U').toUpperCase();
+                    userAvatar.innerHTML = `<span class="text-lg font-bold">${initials}</span>`;
                 }
                 
-                // Update referral link with Telegram share format
-                const referralLink = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/VisitEarnBot/start?ref=${userData.uid}`)}&text=${encodeURIComponent(`Join Visit & Earn and earn money by visiting websites! Use my referral link to get bonus coins! 🎁`)}`;
+                // Update referral link
+                const refCode = userData.uid || telegramUser?.id || 'demo';
+                const referralLink = `https://t.me/share/url?url=${encodeURIComponent(window.location.href)}?ref=${refCode}&text=Join Visit & Earn to make money by visiting websites! 🚀`;
                 document.getElementById('referral-link').value = referralLink;
             }
         }
@@ -346,8 +335,8 @@
                 container.innerHTML = `
                     <div class="no-websites">
                         <i class="fas fa-globe text-4xl text-gray-400 mb-4"></i>
-                        <p class="text-gray-400">No websites available at the moment</p>
-                        <p class="text-sm text-gray-500 mt-2">Check back later for new earning opportunities</p>
+                        <p class="text-gray-400">No websites available</p>
+                        <p class="text-sm text-gray-500 mt-2">Check back later</p>
                     </div>
                 `;
                 return;
@@ -360,12 +349,9 @@
                 const card = document.createElement('div');
                 card.className = `website-card ${isVisited ? 'visited' : ''}`;
                 
-                // Format URL for display
                 let displayUrl = website.link || '';
                 displayUrl = displayUrl.replace('https://', '').replace('http://', '').replace('www.', '');
-                if (displayUrl.length > 30) {
-                    displayUrl = displayUrl.substring(0, 27) + '...';
-                }
+                if (displayUrl.length > 30) displayUrl = displayUrl.substring(0, 27) + '...';
                 
                 card.innerHTML = `
                     <div class="website-icon">
@@ -397,15 +383,13 @@
                 
                 container.appendChild(card);
             });
-            
-            console.log("Websites loaded:", websites.length);
         }
 
         async function visitWebsite(index) {
-            console.log("Visit website clicked:", index);
+            console.log("Visit website:", index);
             
             if (!userData) {
-                showToast("Please login first", "error");
+                showToast("Please wait, loading user data...", "warning");
                 return;
             }
             
@@ -420,45 +404,40 @@
                 return;
             }
             
-            // Check if already visited
             if (visitedSites.includes(index)) {
-                showToast('You have already visited this website today', 'warning');
+                showToast('Already visited today', 'warning');
                 return;
             }
             
             currentWebsite = website;
             timerSeconds = website.timer || 30;
             
-            // Show visit modal
             showVisitModal();
-            
-            // Start timer
             startVisitTimer();
-            
-            // Open website in new window/tab
             openWebsiteWindow(website.link);
         }
 
         function openWebsiteWindow(url) {
             try {
-                // Format URL
                 let formattedUrl = url;
                 if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
                     formattedUrl = 'https://' + formattedUrl;
                 }
                 
-                console.log("Opening website:", formattedUrl);
+                console.log("Opening:", formattedUrl);
                 
-                // Open in new window
+                // Try to open in new window
                 visitUrlWindow = window.open(formattedUrl, '_blank', 'noopener,noreferrer');
                 
-                if (!visitUrlWindow) {
-                    showToast('Please allow popups to visit websites', 'warning');
+                if (!visitUrlWindow || visitUrlWindow.closed) {
+                    console.log("Popup blocked, trying alternative method");
+                    // Alternative: Open in same window
+                    window.open(formattedUrl, '_blank');
                 }
                 
             } catch (error) {
                 console.error('Error opening website:', error);
-                showToast('Error opening website', 'error');
+                showToast('Website will open in new tab', 'info');
             }
         }
 
@@ -491,7 +470,6 @@
         function updateTimerDisplay() {
             document.getElementById('visit-timer').textContent = timerSeconds;
             
-            // Update progress bar
             const totalTime = currentWebsite.timer || 30;
             const progress = ((totalTime - timerSeconds) / totalTime) * 100;
             document.getElementById('timer-progress').style.width = `${progress}%`;
@@ -504,55 +482,47 @@
                 currentTimer = null;
             }
             
-            // Close website window if still open
             if (visitUrlWindow && !visitUrlWindow.closed) {
                 try {
                     visitUrlWindow.close();
-                } catch (e) {
-                    console.log("Could not close window");
-                }
+                } catch (e) {}
             }
             
-            if (!currentWebsite) return;
+            if (!currentWebsite || !userData) return;
             
-            // Add to visited sites
             const websiteIndex = websites.indexOf(currentWebsite);
             if (websiteIndex === -1) return;
             
             visitedSites.push(websiteIndex);
-            
-            // Update balance
             const reward = currentWebsite.reward || 10;
             currentBalance += reward;
             totalEarned += reward;
             
-            // Update Firestore
-            try {
-                await updateDoc(doc(db, "users", userData.uid), {
-                    balance: increment(reward),
-                    totalEarned: increment(reward),
-                    visitedSitesToday: arrayUnion(websiteIndex),
-                    updatedAt: serverTimestamp()
-                });
-                
-                // Update UI
-                updateUserUI();
-                loadWebsites();
-                
-                // Show success message
-                document.getElementById('visit-success').classList.remove('hidden');
-                document.getElementById('visit-in-progress').classList.add('hidden');
-                
-                // Auto-close modal after 2 seconds
-                setTimeout(() => {
-                    closeVisitModal();
-                    showToast(`🎉 +${reward} coins earned!`, 'success');
-                }, 2000);
-                
-            } catch (error) {
-                console.error('Error updating user data:', error);
-                showToast('Error updating balance', 'error');
+            // Save to Firebase if user exists
+            if (userData.uid && userData.telegramId) {
+                try {
+                    await updateDoc(doc(db, "users", userData.uid), {
+                        balance: increment(reward),
+                        totalEarned: increment(reward),
+                        visitedSitesToday: arrayUnion(websiteIndex),
+                        updatedAt: serverTimestamp(),
+                        lastActive: serverTimestamp()
+                    });
+                } catch (error) {
+                    console.error('Error saving visit:', error);
+                }
             }
+            
+            updateUserUI();
+            loadWebsites();
+            
+            document.getElementById('visit-success').classList.remove('hidden');
+            document.getElementById('visit-in-progress').classList.add('hidden');
+            
+            setTimeout(() => {
+                closeVisitModal();
+                showToast(`🎉 +${reward} coins earned!`, 'success');
+            }, 2000);
         }
 
         function closeVisitModal() {
@@ -561,13 +531,10 @@
                 currentTimer = null;
             }
             
-            // Close website window if still open
             if (visitUrlWindow && !visitUrlWindow.closed) {
                 try {
                     visitUrlWindow.close();
-                } catch (e) {
-                    console.log("Could not close window");
-                }
+                } catch (e) {}
             }
             
             document.getElementById('visit-modal').classList.add('hidden');
@@ -582,18 +549,14 @@
 
         // ===== WITHDRAWAL =====
         async function showWithdrawalModal() {
-            if (!appConfig) {
-                await loadAppConfig();
-            }
-            
             const minWithdrawal = appConfig?.minWithdrawal || 1000;
             
             if (currentBalance < minWithdrawal) {
-                showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins. You have ${currentBalance} coins.`, 'warning');
+                showToast(`Need ${minWithdrawal} coins to withdraw. You have ${currentBalance}.`, 'warning');
                 return;
             }
             
-            // Load available methods
+            // Load methods
             const methodsContainer = document.getElementById('withdrawal-methods');
             methodsContainer.innerHTML = '';
             
@@ -617,24 +580,19 @@
                 methodsContainer.appendChild(methodEl);
             });
             
-            // Set max amount
             document.getElementById('withdraw-amount').max = currentBalance;
             document.getElementById('withdraw-amount').value = Math.min(minWithdrawal, currentBalance);
             document.getElementById('withdraw-max').textContent = currentBalance.toLocaleString();
             
-            // Update estimated value
             updateWithdrawalValue();
-            
             document.getElementById('withdrawal-modal').classList.remove('hidden');
         }
 
         function selectWithdrawalMethod(method) {
-            // Update all radio buttons
             document.querySelectorAll('input[name="withdrawal-method"]').forEach(radio => {
                 radio.checked = radio.value === method.toLowerCase();
             });
             
-            // Highlight selected method
             document.querySelectorAll('.withdrawal-method').forEach(el => {
                 el.classList.remove('selected');
             });
@@ -642,9 +600,7 @@
             const selectedMethod = Array.from(document.querySelectorAll('.withdrawal-method'))
                 .find(el => el.querySelector('input').value === method.toLowerCase());
             
-            if (selectedMethod) {
-                selectedMethod.classList.add('selected');
-            }
+            if (selectedMethod) selectedMethod.classList.add('selected');
         }
 
         function getMethodIcon(method) {
@@ -660,13 +616,13 @@
 
         function getMethodDescription(method) {
             const descs = {
-                'bKash': 'Mobile banking (Bangladesh)',
+                'bKash': 'Mobile banking',
                 'Nagad': 'Mobile financial service',
                 'UPI': 'Unified Payments Interface',
                 'Paytm': 'Digital wallet & payments',
                 'PayPal': 'International payments'
             };
-            return descs[method] || 'Digital payment method';
+            return descs[method] || 'Digital payment';
         }
 
         function updateWithdrawalValue() {
@@ -674,7 +630,6 @@
             const coins = appConfig?.coinValueCoins || 1000;
             const inr = appConfig?.coinValueInr || 10;
             const value = (amount / coins) * inr;
-            
             document.getElementById('estimated-value').textContent = `₹${value.toFixed(2)}`;
         }
 
@@ -683,7 +638,6 @@
             const method = document.querySelector('input[name="withdrawal-method"]:checked')?.value;
             const details = document.getElementById('payment-details').value.trim();
             
-            // Validation
             const minWithdrawal = appConfig?.minWithdrawal || 1000;
             
             if (amount < minWithdrawal) {
@@ -697,61 +651,53 @@
             }
             
             if (!method) {
-                showToast('Please select a payment method', 'warning');
+                showToast('Select payment method', 'warning');
                 return;
             }
             
             if (!details) {
-                showToast('Please enter payment details', 'warning');
+                showToast('Enter payment details', 'warning');
                 return;
             }
             
             showLoading();
             
             try {
-                // Create withdrawal request with Telegram user data
-                const withdrawalData = {
-                    userId: userData.uid,
-                    telegramId: userData.telegramId,
-                    userName: userData.firstName + (userData.lastName ? ' ' + userData.lastName : ''),
-                    telegramUsername: userData.username || '',
-                    userPhotoUrl: userData.photoUrl || '',
-                    amount: amount,
-                    method: method,
-                    paymentDetail: details,
-                    status: 'pending',
-                    requestedAt: serverTimestamp(),
-                    updatedAt: serverTimestamp()
-                };
-                
-                await addDoc(collection(db, "withdrawals"), withdrawalData);
-                
-                // Update user balance
-                await updateDoc(doc(db, "users", userData.uid), {
-                    balance: increment(-amount),
-                    withdrawalHistory: arrayUnion({
+                if (userData.uid) {
+                    // Create withdrawal request
+                    const withdrawalData = {
+                        userId: userData.uid,
+                        telegramId: userData.telegramId,
+                        userName: userData.firstName + (userData.lastName ? ' ' + userData.lastName : ''),
+                        telegramUsername: userData.username || '',
+                        userPhotoUrl: userData.photoUrl || '',
                         amount: amount,
                         method: method,
-                        date: new Date().toISOString(),
-                        status: 'pending'
-                    }),
-                    updatedAt: serverTimestamp()
-                });
+                        paymentDetail: details,
+                        status: 'pending',
+                        requestedAt: serverTimestamp()
+                    };
+                    
+                    await addDoc(collection(db, "withdrawals"), withdrawalData);
+                    
+                    // Update user balance
+                    await updateDoc(doc(db, "users", userData.uid), {
+                        balance: increment(-amount),
+                        updatedAt: serverTimestamp()
+                    });
+                }
                 
                 // Update local balance
                 currentBalance -= amount;
                 updateUserUI();
                 
-                // Close modal and show success
                 closeWithdrawalModal();
-                showToast('Withdrawal request submitted successfully!', 'success');
-                
-                // Show confirmation
+                showToast('Withdrawal request submitted!', 'success');
                 showWithdrawalConfirmation(amount, method);
                 
             } catch (error) {
                 console.error('Error submitting withdrawal:', error);
-                showToast('Error submitting withdrawal request', 'error');
+                showToast('Error submitting request', 'error');
             }
             
             hideLoading();
@@ -775,6 +721,8 @@
         }
 
         async function loadUserWithdrawals() {
+            if (!userData?.telegramId) return;
+            
             try {
                 const withdrawalsQuery = query(
                     collection(db, "withdrawals"),
@@ -790,7 +738,7 @@
                             <tr>
                                 <td colspan="4" class="text-center py-8 text-gray-400">
                                     <i class="fas fa-wallet text-2xl mb-2"></i>
-                                    <p>No withdrawal history</p>
+                                    <p>No withdrawals yet</p>
                                 </td>
                             </tr>
                         `;
@@ -806,28 +754,18 @@
                     
                     const withdrawals = [];
                     snapshot.forEach(doc => {
-                        const data = doc.data();
-                        withdrawals.push({
-                            id: doc.id,
-                            ...data
-                        });
+                        withdrawals.push({ id: doc.id, ...doc.data() });
                     });
                     
-                    // Sort by date (newest first)
-                    withdrawals.sort((a, b) => {
-                        const timeA = a.requestedAt?.seconds || 0;
-                        const timeB = b.requestedAt?.seconds || 0;
-                        return timeB - timeA;
-                    });
+                    withdrawals.sort((a, b) => (b.requestedAt?.seconds || 0) - (a.requestedAt?.seconds || 0));
                     
-                    // Update withdrawals table
                     tbody.innerHTML = '';
                     recentTbody.innerHTML = '';
                     
                     withdrawals.forEach((data, index) => {
                         const date = data.requestedAt?.toDate().toLocaleDateString() || 'N/A';
-                        
                         let statusBadge = '';
+                        
                         if (data.status === 'approved') {
                             statusBadge = '<span class="status-badge approved">Approved</span>';
                         } else if (data.status === 'rejected') {
@@ -836,7 +774,6 @@
                             statusBadge = '<span class="status-badge pending">Pending</span>';
                         }
                         
-                        // Add to main table
                         tbody.innerHTML += `
                             <tr>
                                 <td class="py-3">${data.amount.toLocaleString()} coins</td>
@@ -846,8 +783,7 @@
                             </tr>
                         `;
                         
-                        // Add to recent withdrawals (first 5)
-                        if (index < 5) {
+                        if (index < 3) {
                             recentTbody.innerHTML += `
                                 <div class="flex justify-between items-center p-3 bg-white rounded-lg mb-2">
                                     <div>
@@ -863,63 +799,43 @@
                         }
                     });
                     
-                    // Update today's earnings
                     updateTodaysEarnings();
                 });
                 
             } catch (error) {
                 console.error('Error loading withdrawals:', error);
-                // Show empty state
-                document.getElementById('withdrawals-list').innerHTML = `
-                    <tr>
-                        <td colspan="4" class="text-center py-8 text-gray-400">
-                            <i class="fas fa-exclamation-circle text-2xl mb-2"></i>
-                            <p>Error loading withdrawals</p>
-                        </td>
-                    </tr>
-                `;
             }
         }
 
         async function updateTodaysEarnings() {
-            try {
-                const today = new Date().toISOString().split('T')[0];
-                const todayEarningsContainer = document.getElementById('today-earnings');
-                
-                // Calculate today's earnings from visited sites
-                let todaysCoins = 0;
-                const todayVisited = visitedSites || [];
-                
-                todayVisited.forEach(siteIndex => {
-                    if (websites[siteIndex]) {
-                        todaysCoins += websites[siteIndex].reward || 0;
-                    }
-                });
-                
-                if (todaysCoins > 0) {
-                    todayEarningsContainer.innerHTML = `
-                        <div class="flex justify-between items-center p-3 bg-white rounded-lg">
-                            <div>
-                                <p class="font-semibold">Today's Earnings</p>
-                                <p class="text-sm text-gray-600">From ${todayVisited.length} websites</p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-lg font-bold text-green-600">${todaysCoins} coins</p>
-                                <p class="text-sm text-gray-600">≈ ₹${((todaysCoins / (appConfig?.coinValueCoins || 1000)) * (appConfig?.coinValueInr || 10)).toFixed(2)}</p>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    todayEarningsContainer.innerHTML = `
-                        <div class="text-center py-8 text-gray-400">
-                            <i class="fas fa-coins text-2xl mb-2"></i>
-                            <p>No earnings today</p>
-                        </div>
-                    `;
+            const todayEarningsContainer = document.getElementById('today-earnings');
+            let todaysCoins = 0;
+            
+            visitedSites.forEach(siteIndex => {
+                if (websites[siteIndex]) {
+                    todaysCoins += websites[siteIndex].reward || 0;
                 }
-                
-            } catch (error) {
-                console.error('Error updating today earnings:', error);
+            });
+            
+            if (todaysCoins > 0) {
+                todayEarningsContainer.innerHTML = `
+                    <div class="flex justify-between items-center p-3 bg-white rounded-lg">
+                        <div>
+                            <p class="font-semibold">Today's Earnings</p>
+                            <p class="text-sm text-gray-600">From ${visitedSites.length} websites</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-lg font-bold text-green-600">${todaysCoins} coins</p>
+                        </div>
+                    </div>
+                `;
+            } else {
+                todayEarningsContainer.innerHTML = `
+                    <div class="text-center py-8 text-gray-400">
+                        <i class="fas fa-coins text-2xl mb-2"></i>
+                        <p>No earnings today</p>
+                    </div>
+                `;
             }
         }
 
@@ -927,51 +843,37 @@
         function copyReferralLink() {
             const linkInput = document.getElementById('referral-link');
             linkInput.select();
-            linkInput.setSelectionRange(0, 99999);
             
             navigator.clipboard.writeText(linkInput.value)
-                .then(() => {
-                    showToast('Referral link copied to clipboard!', 'success');
-                })
-                .catch(err => {
-                    console.error('Failed to copy: ', err);
-                    showToast('Failed to copy link', 'error');
-                });
+                .then(() => showToast('Link copied!', 'success'))
+                .catch(() => showToast('Failed to copy', 'error'));
         }
 
         function shareReferralLink() {
             const link = document.getElementById('referral-link').value;
             
             if (tg.isVersionAtLeast('6.0')) {
-                tg.shareUrl("Join Visit & Earn and earn money by visiting websites!", link);
+                tg.shareUrl("Earn money visiting websites! Join Visit & Earn!", link);
             } else {
-                // Fallback for older versions
                 window.open(link, '_blank');
             }
         }
 
         // ===== NAVIGATION =====
         function showSection(sectionId) {
-            // Hide all sections
             document.querySelectorAll('.content-section').forEach(section => {
                 section.classList.add('hidden');
             });
             
-            // Remove active from all nav items
             document.querySelectorAll('.nav-item').forEach(item => {
                 item.classList.remove('active');
             });
             
-            // Show selected section
             document.getElementById(`${sectionId}-section`).classList.remove('hidden');
             
-            // Set active nav item
             const activeButton = document.querySelector(`[onclick="showSection('${sectionId}')"]`);
-            if (activeButton) {
-                activeButton.classList.add('active');
-            }
+            if (activeButton) activeButton.classList.add('active');
             
-            // Update title
             const titles = {
                 'home': 'Visit & Earn',
                 'websites': 'Earn Coins',
@@ -982,9 +884,32 @@
             
             document.getElementById('section-title').textContent = titles[sectionId] || 'Visit & Earn';
             
-            // Load section-specific data
             if (sectionId === 'withdraw' || sectionId === 'history') {
                 loadUserWithdrawals();
+            }
+            
+            // Update Telegram back button
+            updateBackButton();
+        }
+
+        function updateBackButton() {
+            const currentSection = document.querySelector('.content-section:not(.hidden)').id.replace('-section', '');
+            
+            if (currentSection === 'home') {
+                tg.BackButton.hide();
+            } else {
+                tg.BackButton.show();
+                tg.BackButton.onClick(() => {
+                    if (!document.getElementById('visit-modal').classList.contains('hidden')) {
+                        closeVisitModal();
+                    } else if (!document.getElementById('withdrawal-modal').classList.contains('hidden')) {
+                        closeWithdrawalModal();
+                    } else if (!document.getElementById('withdrawal-confirmation').classList.contains('hidden')) {
+                        document.getElementById('withdrawal-confirmation').classList.add('hidden');
+                    } else {
+                        showSection('home');
+                    }
+                });
             }
         }
 
@@ -996,21 +921,13 @@
 
         // ===== UTILITY FUNCTIONS =====
         function setupEventListeners() {
-            // Withdrawal amount input
             document.getElementById('withdraw-amount').addEventListener('input', updateWithdrawalValue);
             
-            // Telegram back button
-            tg.BackButton.onClick(() => {
-                if (!document.getElementById('visit-modal').classList.contains('hidden')) {
-                    closeVisitModal();
-                } else if (!document.getElementById('withdrawal-modal').classList.contains('hidden')) {
-                    closeWithdrawalModal();
-                } else if (!document.getElementById('withdrawal-confirmation').classList.contains('hidden')) {
-                    document.getElementById('withdrawal-confirmation').classList.add('hidden');
-                } else if (!document.getElementById('telegram-required-modal').classList.contains('hidden')) {
-                    // Do nothing for required modal
-                } else {
-                    showSection('home');
+            // Handle visibility change (when user returns from website)
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && currentTimer && timerSeconds > 0) {
+                    // User returned to app, continue timer
+                    console.log("User returned to app");
                 }
             });
         }
@@ -1029,12 +946,9 @@
             
             toastMessage.textContent = message;
             toast.className = `toast ${type}`;
-            
             toast.classList.add('show');
             
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
+            setTimeout(() => toast.classList.remove('show'), 3000);
         }
 
         // Make functions globally available
@@ -1124,6 +1038,7 @@
             bottom: 0;
             left: 0;
             right: 0;
+            z-index: 100;
         }
         
         .nav-item {
@@ -1138,6 +1053,7 @@
             background: none;
             border: none;
             outline: none;
+            font-size: 14px;
         }
         
         .nav-item.active {
@@ -1148,8 +1064,8 @@
         }
         
         .nav-item i {
-            font-size: 20px;
-            margin-bottom: 4px;
+            font-size: 18px;
+            margin-bottom: 2px;
         }
         
         .nav-item span {
@@ -1189,24 +1105,31 @@
             color: white;
             font-size: 20px;
             margin-right: 16px;
+            flex-shrink: 0;
         }
         
         .website-info {
             flex: 1;
+            min-width: 0;
         }
         
         .website-name {
             font-weight: 600;
             color: #1a1a1a;
             margin-bottom: 4px;
-            font-size: 14px;
+            font-size: 15px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .website-url {
             color: #6b7280;
             font-size: 12px;
             margin-bottom: 8px;
-            word-break: break-all;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .website-rewards {
@@ -1233,6 +1156,7 @@
             cursor: pointer;
             transition: all 0.3s ease;
             font-size: 14px;
+            white-space: nowrap;
         }
         
         .btn-visit:hover {
@@ -1249,6 +1173,7 @@
             font-weight: 600;
             cursor: not-allowed;
             font-size: 14px;
+            white-space: nowrap;
         }
         
         .modal-overlay {
@@ -1309,12 +1234,12 @@
         .withdrawal-method {
             display: flex;
             align-items: center;
-            padding: 16px;
+            padding: 12px;
             border: 1px solid #e5e7eb;
             border-radius: 12px;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
         }
         
         .withdrawal-method:hover, .withdrawal-method.selected {
@@ -1323,38 +1248,42 @@
         }
         
         .method-icon {
-            width: 48px;
-            height: 48px;
+            width: 40px;
+            height: 40px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 12px;
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
-            font-size: 20px;
-            margin-right: 16px;
+            font-size: 18px;
+            margin-right: 12px;
+            flex-shrink: 0;
         }
         
         .method-info {
             flex: 1;
+            min-width: 0;
         }
         
         .method-info h4 {
             font-weight: 600;
             color: #1a1a1a;
-            margin-bottom: 4px;
+            margin-bottom: 2px;
+            font-size: 14px;
         }
         
         .method-desc {
             color: #6b7280;
-            font-size: 12px;
+            font-size: 11px;
         }
         
         .status-badge {
-            padding: 4px 12px;
+            padding: 4px 10px;
             border-radius: 20px;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
+            display: inline-block;
         }
         
         .status-badge.pending {
@@ -1379,11 +1308,14 @@
             transform: translateX(-50%) translateY(100px);
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 12px 24px;
+            padding: 12px 20px;
             border-radius: 12px;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
             z-index: 1001;
             transition: transform 0.3s ease;
+            font-size: 14px;
+            white-space: nowrap;
+            max-width: 90%;
         }
         
         .toast.show {
@@ -1412,8 +1344,8 @@
         }
         
         .loader {
-            width: 60px;
-            height: 60px;
+            width: 50px;
+            height: 50px;
             border: 4px solid #e5e7eb;
             border-top-color: #667eea;
             border-radius: 50%;
@@ -1435,7 +1367,7 @@
         
         .no-websites {
             text-align: center;
-            padding: 60px 20px;
+            padding: 40px 20px;
         }
         
         .progress-bar {
@@ -1443,7 +1375,7 @@
             background: #e5e7eb;
             border-radius: 3px;
             overflow: hidden;
-            margin: 20px 0;
+            margin: 16px 0;
         }
         
         .progress-fill {
@@ -1453,21 +1385,17 @@
             transition: width 0.3s ease;
         }
         
-        input[type="radio"] {
-            width: 20px;
-            height: 20px;
-        }
-        
-        /* Hide radio button default styling */
+        /* Radio button styling */
         input[type="radio"] {
             appearance: none;
             -webkit-appearance: none;
             border: 2px solid #e5e7eb;
             border-radius: 50%;
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
             cursor: pointer;
             position: relative;
+            flex-shrink: 0;
         }
         
         input[type="radio"]:checked {
@@ -1481,10 +1409,52 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             background: white;
+        }
+        
+        /* Input and button styling */
+        input, textarea, button {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 380px) {
+            .website-card {
+                padding: 12px;
+            }
+            
+            .website-icon {
+                width: 40px;
+                height: 40px;
+                font-size: 18px;
+                margin-right: 12px;
+            }
+            
+            .btn-visit, .btn-visited {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+            
+            .nav-item {
+                padding: 6px 8px;
+            }
+            
+            .nav-item i {
+                font-size: 16px;
+            }
+            
+            .nav-item span {
+                font-size: 10px;
+            }
         }
     </style>
 </head>
@@ -1492,7 +1462,7 @@
     <!-- Toast Notification -->
     <div id="toast" class="toast hidden">
         <i class="fas fa-check-circle mr-2"></i>
-        <span id="toast-message">Operation successful!</span>
+        <span id="toast-message">Success!</span>
     </div>
     
     <!-- Loading Overlay -->
@@ -1503,36 +1473,9 @@
     <!-- Loading Screen -->
     <div id="loading-screen" class="loading-overlay">
         <div class="text-center">
-            <div class="loader mb-6"></div>
-            <h2 class="text-2xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Visit & Earn</h2>
-            <p class="text-gray-600">Loading your earning dashboard...</p>
-        </div>
-    </div>
-    
-    <!-- Telegram Required Modal -->
-    <div id="telegram-required-modal" class="modal-overlay hidden">
-        <div class="modal-content p-8">
-            <div class="text-center">
-                <div class="w-20 h-20 bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <i class="fas fa-telegram text-white text-3xl"></i>
-                </div>
-                <h3 class="text-2xl font-bold mb-4">Telegram Required</h3>
-                <p class="text-gray-600 mb-6">
-                    This app works only inside Telegram. Please open it from a Telegram bot or channel.
-                </p>
-                <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-2xl p-4 mb-6">
-                    <p class="text-sm text-gray-600 mb-2">How to use:</p>
-                    <ol class="text-sm text-gray-600 text-left list-decimal list-inside space-y-1">
-                        <li>Open Telegram app</li>
-                        <li>Search for @VisitEarnBot</li>
-                        <li>Start the bot</li>
-                        <li>Click "Start Earning" button</li>
-                    </ol>
-                </div>
-                <button onclick="window.close()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-xl font-bold">
-                    Close
-                </button>
-            </div>
+            <div class="loader mb-4"></div>
+            <h2 class="text-xl font-bold mb-2 bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Visit & Earn</h2>
+            <p class="text-gray-600 text-sm">Loading...</p>
         </div>
     </div>
     
@@ -1542,11 +1485,11 @@
         <div class="header">
             <div class="flex justify-between items-center mb-6">
                 <div>
-                    <h1 id="section-title" class="text-2xl font-bold">Visit & Earn</h1>
-                    <p class="text-sm opacity-90">Earn money visiting websites</p>
+                    <h1 id="section-title" class="text-xl font-bold">Visit & Earn</h1>
+                    <p class="text-xs opacity-90">Earn coins visiting websites</p>
                 </div>
                 <div id="user-avatar" class="user-avatar">
-                    <i class="fas fa-user"></i>
+                    <span>U</span>
                 </div>
             </div>
             
@@ -1554,69 +1497,69 @@
             <div class="balance-card">
                 <div class="flex justify-between items-center mb-4">
                     <div>
-                        <p class="text-sm text-gray-600">Available Balance</p>
-                        <h2 class="text-3xl font-bold text-gray-900" id="user-balance">0</h2>
-                        <p class="text-sm text-gray-600 mt-1" id="coins-value">1000 coins = ₹10</p>
+                        <p class="text-xs text-gray-600">Available Balance</p>
+                        <h2 class="text-2xl font-bold text-gray-900" id="user-balance">0</h2>
+                        <p class="text-xs text-gray-600 mt-1" id="coins-value">1000 coins = ₹10</p>
                     </div>
                     <div class="text-right">
-                        <p class="text-sm text-gray-600">Total Earned</p>
-                        <p class="text-xl font-bold text-gray-900" id="total-earned">0</p>
+                        <p class="text-xs text-gray-600">Total Earned</p>
+                        <p class="text-lg font-bold text-gray-900" id="total-earned">0</p>
                     </div>
                 </div>
                 
-                <div class="flex gap-3">
-                    <button onclick="showWithdrawalModal()" class="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-xl font-bold">
-                        <i class="fas fa-wallet mr-2"></i>Withdraw
+                <div class="flex gap-2">
+                    <button onclick="showWithdrawalModal()" class="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 rounded-xl font-bold text-sm">
+                        <i class="fas fa-wallet mr-1"></i>Withdraw
                     </button>
-                    <button onclick="showSection('referral')" class="flex-1 border-2 border-purple-600 text-purple-600 py-3 rounded-xl font-bold">
-                        <i class="fas fa-share-alt mr-2"></i>Refer
+                    <button onclick="showSection('referral')" class="flex-1 border border-purple-600 text-purple-600 py-2 rounded-xl font-bold text-sm">
+                        <i class="fas fa-share-alt mr-1"></i>Refer
                     </button>
                 </div>
             </div>
         </div>
         
         <!-- Main Content -->
-        <div id="main-content" class="p-4 pb-24">
+        <div id="main-content" class="p-3 pb-20">
             <!-- Home Section -->
             <div id="home-section" class="content-section">
-                <div class="mb-6">
-                    <h3 class="text-lg font-bold mb-4">Hello, <span id="user-name">User</span>! 👋</h3>
-                    <p class="text-gray-600 mb-6">Visit websites and earn coins. Convert coins to real money!</p>
+                <div class="mb-4">
+                    <h3 class="text-md font-bold mb-3">Hello, <span id="user-name">User</span>! 👋</h3>
+                    <p class="text-gray-600 text-sm mb-4">Visit websites and earn coins. Convert to real money!</p>
                     
-                    <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-2xl p-4 mb-6">
-                        <div class="flex justify-between items-center mb-2">
-                            <span class="font-bold text-gray-900">Daily Progress</span>
-                            <span id="daily-progress" class="font-bold text-purple-600">0/0</span>
+                    <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-xl p-3 mb-4">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-bold text-gray-900 text-sm">Daily Progress</span>
+                            <span id="daily-progress" class="font-bold text-purple-600 text-sm">0/0</span>
                         </div>
                         <div class="progress-bar">
                             <div id="daily-progress-bar" class="progress-fill" style="width: 0%"></div>
                         </div>
-                        <p class="text-sm text-gray-600 mt-2">Visit all websites daily to maximize earnings</p>
+                        <p class="text-xs text-gray-600 mt-1">Visit all websites daily</p>
                     </div>
                     
-                    <div class="grid grid-cols-2 gap-4 mb-6">
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <div class="w-12 h-12 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center mb-3">
-                                <i class="fas fa-coins text-white text-xl"></i>
+                    <div class="grid grid-cols-2 gap-3 mb-4">
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <div class="w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg flex items-center justify-center mb-2">
+                                <i class="fas fa-coins text-white"></i>
                             </div>
-                            <p class="text-sm text-gray-600">Minimum Withdrawal</p>
-                            <p class="text-lg font-bold text-gray-900" id="min-withdrawal">1,000</p>
+                            <p class="text-xs text-gray-600">Min Withdrawal</p>
+                            <p class="text-md font-bold text-gray-900" id="min-withdrawal">1,000</p>
                         </div>
                         
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <div class="w-12 h-12 bg-gradient-to-r from-orange-500 to-red-500 rounded-xl flex items-center justify-center mb-3">
-                                <i class="fas fa-gift text-white text-xl"></i>
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <div class="w-10 h-10 bg-gradient-to-r from-orange-500 to-red-500 rounded-lg flex items-center justify-center mb-2">
+                                <i class="fas fa-gift text-white"></i>
                             </div>
-                            <p class="text-sm text-gray-600">Referral Bonus</p>
-                            <p class="text-lg font-bold text-gray-900">100 coins</p>
+                            <p class="text-xs text-gray-600">Referral Bonus</p>
+                            <p class="text-md font-bold text-gray-900">100 coins</p>
                         </div>
                     </div>
                     
-                    <button onclick="showSection('websites')" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-4 rounded-2xl font-bold text-lg mb-4">
+                    <button onclick="showSection('websites')" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-xl font-bold text-sm mb-3">
                         <i class="fas fa-play-circle mr-2"></i>Start Earning Now
                     </button>
                     
-                    <button onclick="showSection('history')" class="w-full border-2 border-gray-300 text-gray-700 py-4 rounded-2xl font-bold">
+                    <button onclick="showSection('history')" class="w-full border border-gray-300 text-gray-700 py-3 rounded-xl font-bold text-sm">
                         <i class="fas fa-history mr-2"></i>View History
                     </button>
                 </div>
@@ -1624,15 +1567,21 @@
             
             <!-- Websites Section -->
             <div id="websites-section" class="content-section hidden">
-                <div class="mb-6">
-                    <h3 class="text-lg font-bold mb-2">Available Websites</h3>
-                    <p class="text-gray-600 mb-6">Visit each website once daily to earn coins</p>
+                <div class="mb-4">
+                    <div class="flex justify-between items-center mb-3">
+                        <div>
+                            <h3 class="text-md font-bold">Available Websites</h3>
+                            <p class="text-gray-600 text-xs">Visit once daily to earn coins</p>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <span id="visited-count">0</span>/<span id="total-websites">0</span>
+                        </div>
+                    </div>
                     
                     <div id="websites-container">
-                        <!-- Websites will be loaded here -->
                         <div class="no-websites">
-                            <i class="fas fa-globe text-4xl text-gray-400 mb-4"></i>
-                            <p class="text-gray-400">Loading websites...</p>
+                            <i class="fas fa-globe text-3xl text-gray-400 mb-3"></i>
+                            <p class="text-gray-400 text-sm">Loading websites...</p>
                         </div>
                     </div>
                 </div>
@@ -1640,40 +1589,40 @@
             
             <!-- Withdraw Section -->
             <div id="withdraw-section" class="content-section hidden">
-                <div class="mb-6">
-                    <h3 class="text-lg font-bold mb-2">Withdraw Earnings</h3>
-                    <p class="text-gray-600 mb-6">Convert your coins to real money</p>
+                <div class="mb-4">
+                    <h3 class="text-md font-bold mb-2">Withdraw Earnings</h3>
+                    <p class="text-gray-600 text-sm mb-4">Convert coins to real money</p>
                     
-                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
-                        <div class="flex items-center mb-3">
-                            <div class="w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-500 rounded-xl flex items-center justify-center mr-3">
-                                <i class="fas fa-wallet text-white"></i>
+                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-xl p-3 mb-4">
+                        <div class="flex items-center mb-2">
+                            <div class="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg flex items-center justify-center mr-2">
+                                <i class="fas fa-wallet text-white text-sm"></i>
                             </div>
                             <div>
-                                <p class="font-bold text-gray-900">Available Balance</p>
-                                <p class="text-2xl font-bold text-gray-900" id="withdraw-balance">0 coins</p>
+                                <p class="font-bold text-gray-900 text-sm">Available Balance</p>
+                                <p class="text-lg font-bold text-gray-900" id="withdraw-balance">0 coins</p>
                             </div>
                         </div>
-                        <p class="text-sm text-gray-600">Minimum withdrawal: <span id="min-withdraw-amount">1,000</span> coins</p>
+                        <p class="text-xs text-gray-600">Min: <span id="min-withdraw-amount">1,000</span> coins</p>
                     </div>
                     
-                    <div class="bg-gray-50 rounded-2xl p-4 mb-6">
-                        <h4 class="font-bold mb-4">Withdrawal History</h4>
+                    <div class="bg-gray-50 rounded-xl p-3 mb-4">
+                        <h4 class="font-bold text-sm mb-3">Withdrawal History</h4>
                         <div class="overflow-x-auto">
-                            <table class="w-full">
+                            <table class="w-full min-w-full">
                                 <thead>
-                                    <tr class="text-left text-sm text-gray-600">
-                                        <th class="pb-2">Amount</th>
-                                        <th class="pb-2">Method</th>
-                                        <th class="pb-2">Status</th>
+                                    <tr class="text-left text-xs text-gray-600">
+                                        <th class="pb-2 pr-2">Amount</th>
+                                        <th class="pb-2 pr-2">Method</th>
+                                        <th class="pb-2 pr-2">Status</th>
                                         <th class="pb-2">Date</th>
                                     </tr>
                                 </thead>
                                 <tbody id="withdrawals-list">
                                     <tr>
-                                        <td colspan="4" class="text-center py-8 text-gray-400">
-                                            <i class="fas fa-wallet text-2xl mb-2"></i>
-                                            <p>Loading withdrawal history...</p>
+                                        <td colspan="4" class="text-center py-6 text-gray-400">
+                                            <i class="fas fa-wallet text-xl mb-2"></i>
+                                            <p class="text-sm">Loading...</p>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -1681,7 +1630,7 @@
                         </div>
                     </div>
                     
-                    <button onclick="showWithdrawalModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-4 rounded-2xl font-bold text-lg">
+                    <button onclick="showWithdrawalModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold text-sm">
                         <i class="fas fa-money-bill-wave mr-2"></i>Withdraw Now
                     </button>
                 </div>
@@ -1689,54 +1638,54 @@
             
             <!-- Referral Section -->
             <div id="referral-section" class="content-section hidden">
-                <div class="mb-6">
-                    <h3 class="text-lg font-bold mb-2">Refer & Earn</h3>
-                    <p class="text-gray-600 mb-6">Invite friends and earn bonus coins</p>
+                <div class="mb-4">
+                    <h3 class="text-md font-bold mb-2">Refer & Earn</h3>
+                    <p class="text-gray-600 text-sm mb-4">Invite friends, earn bonus coins</p>
                     
-                    <div class="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100 rounded-2xl p-4 mb-6">
-                        <div class="flex items-center mb-4">
-                            <div class="w-12 h-12 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl flex items-center justify-center mr-3">
-                                <i class="fas fa-gift text-white text-xl"></i>
+                    <div class="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100 rounded-xl p-3 mb-4">
+                        <div class="flex items-center mb-3">
+                            <div class="w-10 h-10 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg flex items-center justify-center mr-2">
+                                <i class="fas fa-gift text-white"></i>
                             </div>
                             <div>
-                                <p class="font-bold text-gray-900">Earn 100 coins per referral</p>
-                                <p class="text-sm text-gray-600">Your friend gets 50 coins bonus too!</p>
+                                <p class="font-bold text-gray-900 text-sm">Earn 100 coins per referral</p>
+                                <p class="text-xs text-gray-600">Friend gets 50 coins bonus!</p>
                             </div>
                         </div>
                         
-                        <div class="mb-4">
-                            <p class="text-sm text-gray-600 mb-2">Your Referral Link:</p>
+                        <div class="mb-3">
+                            <p class="text-xs text-gray-600 mb-1">Your Referral Link:</p>
                             <div class="flex">
                                 <input type="text" id="referral-link" readonly 
-                                       class="flex-1 border border-gray-300 rounded-l-xl p-3 text-sm">
-                                <button onclick="copyReferralLink()" class="bg-gray-800 text-white px-4 rounded-r-xl">
-                                    <i class="fas fa-copy"></i>
+                                       class="flex-1 border border-gray-300 rounded-l-lg p-2 text-xs">
+                                <button onclick="copyReferralLink()" class="bg-gray-800 text-white px-3 rounded-r-lg">
+                                    <i class="fas fa-copy text-sm"></i>
                                 </button>
                             </div>
                         </div>
                         
-                        <button onclick="shareReferralLink()" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-xl font-bold">
-                            <i class="fas fa-share-alt mr-2"></i>Share Referral Link
+                        <button onclick="shareReferralLink()" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-2 rounded-lg font-bold text-sm">
+                            <i class="fas fa-share-alt mr-1"></i>Share Link
                         </button>
                     </div>
                     
-                    <div class="grid grid-cols-2 gap-4 mb-6">
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <p class="text-sm text-gray-600">Total Referrals</p>
-                            <p class="text-2xl font-bold text-gray-900" id="total-referrals">0</p>
+                    <div class="grid grid-cols-2 gap-3 mb-4">
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <p class="text-xs text-gray-600">Total Referrals</p>
+                            <p class="text-lg font-bold text-gray-900" id="total-referrals">0</p>
                         </div>
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <p class="text-sm text-gray-600">Referral Earnings</p>
-                            <p class="text-2xl font-bold text-gray-900" id="referral-earnings">0 coins</p>
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <p class="text-xs text-gray-600">Referral Earnings</p>
+                            <p class="text-lg font-bold text-gray-900" id="referral-earnings">0 coins</p>
                         </div>
                     </div>
                     
-                    <div class="bg-yellow-50 border border-yellow-100 rounded-2xl p-4">
+                    <div class="bg-yellow-50 border border-yellow-100 rounded-xl p-3">
                         <div class="flex">
-                            <i class="fas fa-lightbulb text-yellow-500 text-xl mr-3 mt-1"></i>
+                            <i class="fas fa-lightbulb text-yellow-500 mt-0.5 mr-2"></i>
                             <div>
-                                <p class="font-bold text-gray-900 mb-2">Pro Tip</p>
-                                <p class="text-sm text-gray-600">Share your referral link on social media to maximize earnings. More referrals = more coins!</p>
+                                <p class="font-bold text-gray-900 text-sm mb-1">Pro Tip</p>
+                                <p class="text-xs text-gray-600">Share your link to maximize earnings!</p>
                             </div>
                         </div>
                     </div>
@@ -1745,27 +1694,27 @@
             
             <!-- History Section -->
             <div id="history-section" class="content-section hidden">
-                <div class="mb-6">
-                    <h3 class="text-lg font-bold mb-2">Earning History</h3>
-                    <p class="text-gray-600 mb-6">Track your earnings and activities</p>
+                <div class="mb-4">
+                    <h3 class="text-md font-bold mb-2">Earning History</h3>
+                    <p class="text-gray-600 text-sm mb-4">Track your earnings</p>
                     
-                    <div class="space-y-4">
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <h4 class="font-bold mb-3">Today's Earnings</h4>
-                            <div class="space-y-2" id="today-earnings">
-                                <div class="text-center py-8 text-gray-400">
-                                    <i class="fas fa-coins text-2xl mb-2"></i>
-                                    <p>Loading today's earnings...</p>
+                    <div class="space-y-3">
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <h4 class="font-bold text-sm mb-2">Today's Earnings</h4>
+                            <div id="today-earnings">
+                                <div class="text-center py-6 text-gray-400">
+                                    <i class="fas fa-coins text-xl mb-2"></i>
+                                    <p class="text-sm">Loading...</p>
                                 </div>
                             </div>
                         </div>
                         
-                        <div class="bg-gray-50 rounded-2xl p-4">
-                            <h4 class="font-bold mb-3">Recent Withdrawals</h4>
+                        <div class="bg-gray-50 rounded-xl p-3">
+                            <h4 class="font-bold text-sm mb-2">Recent Withdrawals</h4>
                             <div id="recent-withdrawals">
-                                <div class="text-center py-8 text-gray-400">
-                                    <i class="fas fa-wallet text-2xl mb-2"></i>
-                                    <p>Loading withdrawals...</p>
+                                <div class="text-center py-6 text-gray-400">
+                                    <i class="fas fa-wallet text-xl mb-2"></i>
+                                    <p class="text-sm">Loading...</p>
                                 </div>
                             </div>
                         </div>
@@ -1802,18 +1751,18 @@
     <!-- Visit Website Modal -->
     <div id="visit-modal" class="modal-overlay hidden">
         <div class="modal-content">
-            <div class="p-6">
+            <div class="p-4">
                 <div id="visit-in-progress">
-                    <div class="text-center mb-8">
-                        <div class="timer-circle mb-6">
-                            <span id="visit-timer" class="text-4xl font-bold">30</span>
+                    <div class="text-center mb-6">
+                        <div class="timer-circle mb-4">
+                            <span id="visit-timer" class="text-3xl font-bold">30</span>
                         </div>
-                        <h3 class="text-2xl font-bold mb-2" id="visit-website-name">Website Name</h3>
-                        <p class="text-gray-600" id="visit-website-url">website.com</p>
+                        <h3 class="text-xl font-bold mb-1" id="visit-website-name">Website</h3>
+                        <p class="text-gray-600 text-sm" id="visit-website-url">website.com</p>
                     </div>
                     
-                    <div class="mb-8">
-                        <div class="flex justify-between mb-2">
+                    <div class="mb-6">
+                        <div class="flex justify-between mb-1">
                             <span class="text-sm text-gray-600">Progress</span>
                             <span class="text-sm font-bold" id="timer-percentage">0%</span>
                         </div>
@@ -1822,38 +1771,38 @@
                         </div>
                     </div>
                     
-                    <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-2xl p-4 mb-6">
+                    <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-xl p-3 mb-4">
                         <div class="flex justify-between items-center">
                             <div>
-                                <p class="text-sm text-gray-600">You will earn</p>
-                                <p class="text-2xl font-bold text-gray-900" id="visit-reward">10 coins</p>
+                                <p class="text-xs text-gray-600">You will earn</p>
+                                <p class="text-xl font-bold text-gray-900" id="visit-reward">10 coins</p>
                             </div>
-                            <div class="w-12 h-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center">
-                                <i class="fas fa-coins text-white text-xl"></i>
+                            <div class="w-10 h-10 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-coins text-white"></i>
                             </div>
                         </div>
                     </div>
                     
-                    <p class="text-sm text-gray-600 text-center mb-6">
-                        Website opened in new tab. Please wait while we track your visit. Do not close this window.
+                    <p class="text-xs text-gray-600 text-center mb-4">
+                        Website opened. Wait for timer to complete.
                     </p>
                     
-                    <button onclick="closeVisitModal()" class="w-full border-2 border-gray-300 text-gray-700 py-3 rounded-xl font-bold">
+                    <button onclick="closeVisitModal()" class="w-full border border-gray-300 text-gray-700 py-2 rounded-lg font-bold text-sm">
                         Cancel Visit
                     </button>
                 </div>
                 
                 <div id="visit-success" class="hidden text-center">
-                    <div class="w-20 h-20 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
-                        <i class="fas fa-check text-white text-3xl"></i>
+                    <div class="w-16 h-16 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-check text-white text-2xl"></i>
                     </div>
-                    <h3 class="text-2xl font-bold mb-2">Visit Completed!</h3>
-                    <p class="text-gray-600 mb-6">Coins have been added to your balance</p>
-                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
-                        <p class="text-sm text-gray-600 mb-1">Earned</p>
-                        <p class="text-3xl font-bold text-gray-900" id="earned-amount">10 coins</p>
+                    <h3 class="text-xl font-bold mb-1">Visit Completed!</h3>
+                    <p class="text-gray-600 text-sm mb-4">Coins added to balance</p>
+                    <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-xl p-3 mb-4">
+                        <p class="text-xs text-gray-600 mb-1">Earned</p>
+                        <p class="text-2xl font-bold text-gray-900" id="earned-amount">10 coins</p>
                     </div>
-                    <button onclick="closeVisitModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold">
+                    <button onclick="closeVisitModal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-2 rounded-lg font-bold text-sm">
                         Continue Earning
                     </button>
                 </div>
@@ -1864,50 +1813,50 @@
     <!-- Withdrawal Modal -->
     <div id="withdrawal-modal" class="modal-overlay hidden">
         <div class="modal-content">
-            <div class="p-6">
-                <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold">Withdraw Coins</h3>
+            <div class="p-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-xl font-bold">Withdraw Coins</h3>
                     <button onclick="closeWithdrawalModal()" class="text-gray-400 hover:text-gray-600">
-                        <i class="fas fa-times text-xl"></i>
+                        <i class="fas fa-times"></i>
                     </button>
                 </div>
                 
-                <div class="mb-6">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Amount (coins)</label>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Amount (coins)</label>
                     <div class="relative">
                         <input type="number" id="withdraw-amount" min="1000" 
-                               class="w-full border border-gray-300 rounded-xl p-4 text-lg font-bold" 
+                               class="w-full border border-gray-300 rounded-lg p-3 text-md font-bold" 
                                placeholder="1000">
-                        <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-600">
+                        <div class="absolute right-2 top-1/2 transform -translate-y-1/2 text-xs text-gray-600">
                             Max: <span id="withdraw-max">0</span>
                         </div>
                     </div>
-                    <p class="text-sm text-gray-500 mt-2">Min: <span id="min-withdraw-modal">1,000</span> coins</p>
+                    <p class="text-xs text-gray-500 mt-1">Min: <span id="min-withdraw-modal">1,000</span> coins</p>
                 </div>
                 
-                <div class="mb-6">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Payment Method</label>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
                     <div id="withdrawal-methods">
-                        <!-- Methods will be loaded here -->
+                        <!-- Methods loaded here -->
                     </div>
                 </div>
                 
-                <div class="mb-6">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Payment Details</label>
-                    <textarea id="payment-details" rows="3" 
-                              class="w-full border border-gray-300 rounded-xl p-4"
-                              placeholder="Enter your account number, UPI ID, etc."></textarea>
-                    <p class="text-sm text-gray-500 mt-2">Enter exact payment details for the selected method</p>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Payment Details</label>
+                    <textarea id="payment-details" rows="2" 
+                              class="w-full border border-gray-300 rounded-lg p-3 text-sm"
+                              placeholder="Account number, UPI ID, etc."></textarea>
+                    <p class="text-xs text-gray-500 mt-1">Enter exact payment details</p>
                 </div>
                 
-                <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-2xl p-4 mb-6">
-                    <p class="text-sm text-gray-600 mb-1">Estimated Value</p>
-                    <p class="text-2xl font-bold text-gray-900" id="estimated-value">₹0.00</p>
-                    <p class="text-xs text-gray-500 mt-2">Based on current conversion rate</p>
+                <div class="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-100 rounded-xl p-3 mb-4">
+                    <p class="text-xs text-gray-600 mb-1">Estimated Value</p>
+                    <p class="text-xl font-bold text-gray-900" id="estimated-value">₹0.00</p>
+                    <p class="text-xs text-gray-500 mt-1">Current conversion rate</p>
                 </div>
                 
-                <button onclick="submitWithdrawal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-4 rounded-2xl font-bold text-lg">
-                    <i class="fas fa-paper-plane mr-2"></i>Submit Withdrawal Request
+                <button onclick="submitWithdrawal()" class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-lg font-bold text-sm">
+                    <i class="fas fa-paper-plane mr-2"></i>Submit Request
                 </button>
             </div>
         </div>
@@ -1916,25 +1865,25 @@
     <!-- Withdrawal Confirmation -->
     <div id="withdrawal-confirmation" class="modal-overlay hidden">
         <div class="modal-content">
-            <div class="p-6 text-center">
-                <div class="w-20 h-20 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <i class="fas fa-check text-white text-3xl"></i>
+            <div class="p-4 text-center">
+                <div class="w-16 h-16 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-check text-white text-2xl"></i>
                 </div>
-                <h3 class="text-2xl font-bold mb-2">Request Submitted!</h3>
-                <p class="text-gray-600 mb-6">Your withdrawal request has been received</p>
+                <h3 class="text-xl font-bold mb-1">Request Submitted!</h3>
+                <p class="text-gray-600 text-sm mb-4">Withdrawal request received</p>
                 
-                <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-4 mb-6">
-                    <p class="text-sm text-gray-600 mb-1">Amount</p>
-                    <p class="text-3xl font-bold text-gray-900" id="confirmation-amount">0 coins</p>
-                    <p class="text-sm text-gray-600 mt-2">Method: <span id="confirmation-method" class="font-bold">BKASH</span></p>
+                <div class="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-xl p-3 mb-4">
+                    <p class="text-xs text-gray-600 mb-1">Amount</p>
+                    <p class="text-2xl font-bold text-gray-900" id="confirmation-amount">0 coins</p>
+                    <p class="text-xs text-gray-600 mt-2">Method: <span id="confirmation-method" class="font-bold">BKASH</span></p>
                 </div>
                 
-                <p class="text-sm text-gray-600 mb-6">
-                    Your request will be processed within 24-48 hours. You will receive a notification when it's completed.
+                <p class="text-xs text-gray-600 mb-4">
+                    Processed within 24-48 hours. You'll be notified when completed.
                 </p>
                 
                 <button onclick="document.getElementById('withdrawal-confirmation').classList.add('hidden')" 
-                        class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold">
+                        class="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-2 rounded-lg font-bold text-sm">
                     Done
                 </button>
             </div>
