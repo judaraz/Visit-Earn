@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -32,7 +31,8 @@
             setDoc,
             serverTimestamp,
             increment,
-            onSnapshot
+            onSnapshot,
+            arrayUnion
         } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
 
         // Initialize Firebase
@@ -53,6 +53,8 @@
         let currentWebsite = null;
         let currentBalance = 0;
         let totalEarned = 0;
+        let telegramUser = null;
+        let visitUrlWindow = null;
 
         // Initialize on load
         window.onload = async () => {
@@ -63,13 +65,20 @@
             tg.ready();
             
             // Get user from Telegram
-            const telegramUser = tg.initDataUnsafe.user;
-            console.log("Telegram User:", telegramUser);
+            telegramUser = tg.initDataUnsafe.user;
+            
+            if (!telegramUser) {
+                console.error("No Telegram user found");
+                document.getElementById('telegram-required-modal').classList.remove('hidden');
+                return;
+            }
+            
+            console.log("Telegram User Data:", telegramUser);
             
             // Setup event listeners
             setupEventListeners();
             
-            // Initialize user
+            // Initialize user with Telegram data only
             await initializeUser(telegramUser);
             
             // Load app data
@@ -79,29 +88,34 @@
             showMainApp();
         };
 
-        // ===== USER MANAGEMENT =====
+        // ===== USER MANAGEMENT (TELEGRAM DATA ONLY) =====
         async function initializeUser(telegramUser) {
             showLoading();
             
             try {
-                if (!telegramUser) {
-                    console.error("No Telegram user found");
-                    showToast("Telegram authentication required", "error");
-                    return;
-                }
-                
                 const userId = telegramUser.id.toString();
                 const userDoc = await getDoc(doc(db, "users", userId));
                 
                 if (!userDoc.exists()) {
-                    // Create new user
+                    // Create new user with Telegram data only
                     await createNewUser(telegramUser);
                 } else {
                     // Load existing user
                     userData = userDoc.data();
+                    
+                    // Verify Telegram data matches stored data
+                    if (userData.telegramId !== userId.toString()) {
+                        console.error("User ID mismatch");
+                        showToast("Authentication error", "error");
+                        return;
+                    }
+                    
                     currentBalance = userData.balance || 0;
                     totalEarned = userData.totalEarned || 0;
                     visitedSites = userData.visitedSitesToday || [];
+                    
+                    // Update Telegram profile data if changed
+                    await updateTelegramProfileData(telegramUser);
                     
                     // Check daily reset
                     await checkDailyReset();
@@ -122,40 +136,78 @@
             try {
                 const userId = telegramUser.id.toString();
                 
-                // Create user document
+                // Create user document with Telegram data only
                 userData = {
                     uid: userId,
                     telegramId: userId,
-                    firstName: telegramUser.first_name,
+                    firstName: telegramUser.first_name || '',
                     lastName: telegramUser.last_name || '',
                     username: telegramUser.username || '',
+                    photoUrl: telegramUser.photo_url || '',
                     languageCode: telegramUser.language_code || 'en',
-                    balance: 0,
-                    totalEarned: 0,
+                    
+                    // App data
+                    balance: 100, // Starting bonus
+                    totalEarned: 100,
                     visitedSitesToday: [],
                     lastSiteVisitDate: new Date().toISOString().split('T')[0],
                     referrals: [],
                     totalReferrals: 0,
                     referralEarnings: 0,
                     withdrawalHistory: [],
+                    
+                    // Tracking data
+                    lastLogin: serverTimestamp(),
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp()
                 };
                 
+                console.log("Creating new user with Telegram data");
+                
                 await setDoc(doc(db, "users", userId), userData);
                 
-                currentBalance = 0;
-                totalEarned = 0;
+                currentBalance = 100;
+                totalEarned = 100;
                 visitedSites = [];
                 
                 // Update UI
                 updateUserUI();
                 
-                showToast('Welcome to Visit & Earn! 🎉', 'success');
+                showToast('Welcome to Visit & Earn! 🎉 100 bonus coins added!', 'success');
                 
             } catch (error) {
                 console.error('Error creating user:', error);
-                throw error;
+                showToast('Error creating user account', 'error');
+            }
+        }
+
+        async function updateTelegramProfileData(telegramUser) {
+            try {
+                const updates = {};
+                const userId = telegramUser.id.toString();
+                
+                // Check if profile data changed
+                if (userData.firstName !== telegramUser.first_name) {
+                    updates.firstName = telegramUser.first_name || '';
+                }
+                if (userData.lastName !== (telegramUser.last_name || '')) {
+                    updates.lastName = telegramUser.last_name || '';
+                }
+                if (userData.username !== (telegramUser.username || '')) {
+                    updates.username = telegramUser.username || '';
+                }
+                if (userData.photoUrl !== (telegramUser.photo_url || '')) {
+                    updates.photoUrl = telegramUser.photo_url || '';
+                }
+                
+                if (Object.keys(updates).length > 0) {
+                    updates.updatedAt = serverTimestamp();
+                    await updateDoc(doc(db, "users", userId), updates);
+                    console.log("Updated Telegram profile data");
+                }
+                
+            } catch (error) {
+                console.error('Error updating Telegram profile:', error);
             }
         }
 
@@ -196,16 +248,32 @@
                     // Load available websites
                     loadWebsites();
                     
-                    console.log("✅ App config loaded");
+                    console.log("✅ App config loaded, websites:", websites.length);
                 } else {
                     console.warn("No config found, using defaults");
-                    websites = [];
+                    // Create default websites for testing
+                    websites = [
+                        { name: "Google", link: "https://www.google.com", reward: 10, timer: 30 },
+                        { name: "YouTube", link: "https://www.youtube.com", reward: 15, timer: 45 },
+                        { name: "Facebook", link: "https://www.facebook.com", reward: 12, timer: 40 },
+                        { name: "Wikipedia", link: "https://www.wikipedia.org", reward: 8, timer: 35 }
+                    ];
                     withdrawalMethods = ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
+                    updateConfigUI();
+                    loadWebsites();
                 }
                 
             } catch (error) {
                 console.error('Error loading app config:', error);
-                showToast('Error loading app configuration', 'error');
+                // Use fallback websites
+                websites = [
+                    { name: "Google", link: "https://www.google.com", reward: 10, timer: 30 },
+                    { name: "YouTube", link: "https://www.youtube.com", reward: 15, timer: 45 },
+                    { name: "Facebook", link: "https://www.facebook.com", reward: 12, timer: 40 }
+                ];
+                updateConfigUI();
+                loadWebsites();
+                showToast('Using default websites', 'warning');
             }
         }
 
@@ -217,6 +285,14 @@
                 // Update minimum withdrawal
                 const minWithdrawal = appConfig.minWithdrawal || 1000;
                 document.getElementById('min-withdrawal').textContent = minWithdrawal.toLocaleString();
+                document.getElementById('min-withdraw-amount').textContent = minWithdrawal.toLocaleString();
+                document.getElementById('min-withdraw-modal').textContent = minWithdrawal.toLocaleString();
+            } else {
+                // Default values
+                document.getElementById('min-withdrawal').textContent = '1,000';
+                document.getElementById('min-withdraw-amount').textContent = '1,000';
+                document.getElementById('min-withdraw-modal').textContent = '1,000';
+                document.getElementById('coins-value').textContent = '1000 coins = ₹10';
             }
         }
 
@@ -230,13 +306,34 @@
 
         function updateUserUI() {
             if (userData) {
+                // Display Telegram user data
                 document.getElementById('user-name').textContent = userData.firstName || 'User';
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString();
+                document.getElementById('withdraw-balance').textContent = currentBalance.toLocaleString() + ' coins';
                 document.getElementById('total-earned').textContent = totalEarned.toLocaleString();
                 document.getElementById('daily-progress').textContent = `${visitedSites.length}/${websites.length}`;
+                document.getElementById('withdraw-max').textContent = currentBalance.toLocaleString();
+                document.getElementById('total-referrals').textContent = userData.totalReferrals || 0;
+                document.getElementById('referral-earnings').textContent = (userData.referralEarnings || 0).toLocaleString() + ' coins';
                 
-                // Update referral link
-                const referralLink = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/VisitEarnBot/start?ref=${userData.uid}`)}&text=Earn money by visiting websites! Use my referral link to get bonus coins!`;
+                // Update daily progress bar
+                if (websites.length > 0) {
+                    const progress = (visitedSites.length / websites.length) * 100;
+                    document.getElementById('daily-progress-bar').style.width = `${progress}%`;
+                } else {
+                    document.getElementById('daily-progress-bar').style.width = '0%';
+                }
+                
+                // Update user avatar with Telegram photo if available
+                const userAvatar = document.getElementById('user-avatar');
+                if (userData.photoUrl) {
+                    userAvatar.innerHTML = `<img src="${userData.photoUrl}" alt="${userData.firstName}" class="w-full h-full rounded-full object-cover">`;
+                } else {
+                    userAvatar.innerHTML = `<i class="fas fa-user"></i>`;
+                }
+                
+                // Update referral link with Telegram share format
+                const referralLink = `https://t.me/share/url?url=${encodeURIComponent(`https://t.me/VisitEarnBot/start?ref=${userData.uid}`)}&text=${encodeURIComponent(`Join Visit & Earn and earn money by visiting websites! Use my referral link to get bonus coins! 🎁`)}`;
                 document.getElementById('referral-link').value = referralLink;
             }
         }
@@ -245,7 +342,7 @@
         function loadWebsites() {
             const container = document.getElementById('websites-container');
             
-            if (websites.length === 0) {
+            if (!websites || websites.length === 0) {
                 container.innerHTML = `
                     <div class="no-websites">
                         <i class="fas fa-globe text-4xl text-gray-400 mb-4"></i>
@@ -263,13 +360,20 @@
                 const card = document.createElement('div');
                 card.className = `website-card ${isVisited ? 'visited' : ''}`;
                 
+                // Format URL for display
+                let displayUrl = website.link || '';
+                displayUrl = displayUrl.replace('https://', '').replace('http://', '').replace('www.', '');
+                if (displayUrl.length > 30) {
+                    displayUrl = displayUrl.substring(0, 27) + '...';
+                }
+                
                 card.innerHTML = `
                     <div class="website-icon">
                         <i class="fas fa-globe"></i>
                     </div>
                     <div class="website-info">
-                        <h3 class="website-name">${website.name}</h3>
-                        <p class="website-url">${website.link.replace('https://', '').replace('www.', '')}</p>
+                        <h3 class="website-name">${website.name || 'Website'}</h3>
+                        <p class="website-url">${displayUrl}</p>
                         <div class="website-rewards">
                             <span class="reward-amount">
                                 <i class="fas fa-coins"></i> ${website.reward || 10} coins
@@ -293,13 +397,28 @@
                 
                 container.appendChild(card);
             });
+            
+            console.log("Websites loaded:", websites.length);
         }
 
         async function visitWebsite(index) {
-            if (!userData) return;
+            console.log("Visit website clicked:", index);
+            
+            if (!userData) {
+                showToast("Please login first", "error");
+                return;
+            }
+            
+            if (index < 0 || index >= websites.length) {
+                showToast("Invalid website", "error");
+                return;
+            }
             
             const website = websites[index];
-            if (!website) return;
+            if (!website || !website.link) {
+                showToast("Website data error", "error");
+                return;
+            }
             
             // Check if already visited
             if (visitedSites.includes(index)) {
@@ -315,15 +434,42 @@
             
             // Start timer
             startVisitTimer();
+            
+            // Open website in new window/tab
+            openWebsiteWindow(website.link);
+        }
+
+        function openWebsiteWindow(url) {
+            try {
+                // Format URL
+                let formattedUrl = url;
+                if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+                    formattedUrl = 'https://' + formattedUrl;
+                }
+                
+                console.log("Opening website:", formattedUrl);
+                
+                // Open in new window
+                visitUrlWindow = window.open(formattedUrl, '_blank', 'noopener,noreferrer');
+                
+                if (!visitUrlWindow) {
+                    showToast('Please allow popups to visit websites', 'warning');
+                }
+                
+            } catch (error) {
+                console.error('Error opening website:', error);
+                showToast('Error opening website', 'error');
+            }
         }
 
         function showVisitModal() {
             if (!currentWebsite) return;
             
-            document.getElementById('visit-website-name').textContent = currentWebsite.name;
-            document.getElementById('visit-website-url').textContent = currentWebsite.link;
+            document.getElementById('visit-website-name').textContent = currentWebsite.name || 'Website';
+            document.getElementById('visit-website-url').textContent = currentWebsite.link || '';
             document.getElementById('visit-timer').textContent = timerSeconds;
             document.getElementById('visit-reward').textContent = currentWebsite.reward || 10;
+            document.getElementById('earned-amount').textContent = (currentWebsite.reward || 10) + ' coins';
             
             document.getElementById('visit-modal').classList.remove('hidden');
             document.getElementById('main-content').classList.add('hidden');
@@ -346,8 +492,10 @@
             document.getElementById('visit-timer').textContent = timerSeconds;
             
             // Update progress bar
-            const progress = ((currentWebsite.timer - timerSeconds) / currentWebsite.timer) * 100;
+            const totalTime = currentWebsite.timer || 30;
+            const progress = ((totalTime - timerSeconds) / totalTime) * 100;
             document.getElementById('timer-progress').style.width = `${progress}%`;
+            document.getElementById('timer-percentage').textContent = `${Math.round(progress)}%`;
         }
 
         async function completeVisit() {
@@ -355,6 +503,17 @@
                 clearInterval(currentTimer);
                 currentTimer = null;
             }
+            
+            // Close website window if still open
+            if (visitUrlWindow && !visitUrlWindow.closed) {
+                try {
+                    visitUrlWindow.close();
+                } catch (e) {
+                    console.log("Could not close window");
+                }
+            }
+            
+            if (!currentWebsite) return;
             
             // Add to visited sites
             const websiteIndex = websites.indexOf(currentWebsite);
@@ -372,7 +531,7 @@
                 await updateDoc(doc(db, "users", userData.uid), {
                     balance: increment(reward),
                     totalEarned: increment(reward),
-                    visitedSitesToday: visitedSites,
+                    visitedSitesToday: arrayUnion(websiteIndex),
                     updatedAt: serverTimestamp()
                 });
                 
@@ -402,6 +561,15 @@
                 currentTimer = null;
             }
             
+            // Close website window if still open
+            if (visitUrlWindow && !visitUrlWindow.closed) {
+                try {
+                    visitUrlWindow.close();
+                } catch (e) {
+                    console.log("Could not close window");
+                }
+            }
+            
             document.getElementById('visit-modal').classList.add('hidden');
             document.getElementById('main-content').classList.remove('hidden');
             document.getElementById('visit-success').classList.add('hidden');
@@ -409,16 +577,19 @@
             
             currentWebsite = null;
             timerSeconds = 0;
+            visitUrlWindow = null;
         }
 
         // ===== WITHDRAWAL =====
         async function showWithdrawalModal() {
-            if (!appConfig) return;
+            if (!appConfig) {
+                await loadAppConfig();
+            }
             
-            const minWithdrawal = appConfig.minWithdrawal || 1000;
+            const minWithdrawal = appConfig?.minWithdrawal || 1000;
             
             if (currentBalance < minWithdrawal) {
-                showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins`, 'warning');
+                showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins. You have ${currentBalance} coins.`, 'warning');
                 return;
             }
             
@@ -426,9 +597,11 @@
             const methodsContainer = document.getElementById('withdrawal-methods');
             methodsContainer.innerHTML = '';
             
-            withdrawalMethods.forEach(method => {
+            const methods = withdrawalMethods || ['bKash', 'Nagad', 'UPI', 'Paytm', 'PayPal'];
+            methods.forEach(method => {
                 const methodEl = document.createElement('div');
                 methodEl.className = 'withdrawal-method';
+                methodEl.onclick = () => selectWithdrawalMethod(method);
                 methodEl.innerHTML = `
                     <div class="method-icon">
                         ${getMethodIcon(method)}
@@ -446,13 +619,32 @@
             
             // Set max amount
             document.getElementById('withdraw-amount').max = currentBalance;
-            document.getElementById('withdraw-amount').value = minWithdrawal;
+            document.getElementById('withdraw-amount').value = Math.min(minWithdrawal, currentBalance);
             document.getElementById('withdraw-max').textContent = currentBalance.toLocaleString();
             
             // Update estimated value
             updateWithdrawalValue();
             
             document.getElementById('withdrawal-modal').classList.remove('hidden');
+        }
+
+        function selectWithdrawalMethod(method) {
+            // Update all radio buttons
+            document.querySelectorAll('input[name="withdrawal-method"]').forEach(radio => {
+                radio.checked = radio.value === method.toLowerCase();
+            });
+            
+            // Highlight selected method
+            document.querySelectorAll('.withdrawal-method').forEach(el => {
+                el.classList.remove('selected');
+            });
+            
+            const selectedMethod = Array.from(document.querySelectorAll('.withdrawal-method'))
+                .find(el => el.querySelector('input').value === method.toLowerCase());
+            
+            if (selectedMethod) {
+                selectedMethod.classList.add('selected');
+            }
         }
 
         function getMethodIcon(method) {
@@ -479,10 +671,8 @@
 
         function updateWithdrawalValue() {
             const amount = parseInt(document.getElementById('withdraw-amount').value) || 0;
-            if (!appConfig || amount <= 0) return;
-            
-            const coins = appConfig.coinValueCoins || 1000;
-            const inr = appConfig.coinValueInr || 10;
+            const coins = appConfig?.coinValueCoins || 1000;
+            const inr = appConfig?.coinValueInr || 10;
             const value = (amount / coins) * inr;
             
             document.getElementById('estimated-value').textContent = `₹${value.toFixed(2)}`;
@@ -494,7 +684,7 @@
             const details = document.getElementById('payment-details').value.trim();
             
             // Validation
-            const minWithdrawal = appConfig.minWithdrawal || 1000;
+            const minWithdrawal = appConfig?.minWithdrawal || 1000;
             
             if (amount < minWithdrawal) {
                 showToast(`Minimum withdrawal is ${minWithdrawal.toLocaleString()} coins`, 'warning');
@@ -519,11 +709,13 @@
             showLoading();
             
             try {
-                // Create withdrawal request
+                // Create withdrawal request with Telegram user data
                 const withdrawalData = {
                     userId: userData.uid,
+                    telegramId: userData.telegramId,
                     userName: userData.firstName + (userData.lastName ? ' ' + userData.lastName : ''),
                     telegramUsername: userData.username || '',
+                    userPhotoUrl: userData.photoUrl || '',
                     amount: amount,
                     method: method,
                     paymentDetail: details,
@@ -537,6 +729,12 @@
                 // Update user balance
                 await updateDoc(doc(db, "users", userData.uid), {
                     balance: increment(-amount),
+                    withdrawalHistory: arrayUnion({
+                        amount: amount,
+                        method: method,
+                        date: new Date().toISOString(),
+                        status: 'pending'
+                    }),
                     updatedAt: serverTimestamp()
                 });
                 
@@ -568,18 +766,24 @@
         function closeWithdrawalModal() {
             document.getElementById('withdrawal-modal').classList.add('hidden');
             document.getElementById('payment-details').value = '';
+            document.querySelectorAll('.withdrawal-method').forEach(el => {
+                el.classList.remove('selected');
+            });
+            document.querySelectorAll('input[name="withdrawal-method"]').forEach(radio => {
+                radio.checked = false;
+            });
         }
 
         async function loadUserWithdrawals() {
             try {
                 const withdrawalsQuery = query(
                     collection(db, "withdrawals"),
-                    where("userId", "==", userData.uid)
+                    where("telegramId", "==", userData.telegramId)
                 );
                 
                 onSnapshot(withdrawalsQuery, (snapshot) => {
                     const tbody = document.getElementById('withdrawals-list');
-                    tbody.innerHTML = '';
+                    const recentTbody = document.getElementById('recent-withdrawals');
                     
                     if (snapshot.empty) {
                         tbody.innerHTML = `
@@ -590,11 +794,37 @@
                                 </td>
                             </tr>
                         `;
+                        
+                        recentTbody.innerHTML = `
+                            <div class="text-center py-8 text-gray-400">
+                                <i class="fas fa-wallet text-2xl mb-2"></i>
+                                <p>No withdrawals yet</p>
+                            </div>
+                        `;
                         return;
                     }
                     
+                    const withdrawals = [];
                     snapshot.forEach(doc => {
                         const data = doc.data();
+                        withdrawals.push({
+                            id: doc.id,
+                            ...data
+                        });
+                    });
+                    
+                    // Sort by date (newest first)
+                    withdrawals.sort((a, b) => {
+                        const timeA = a.requestedAt?.seconds || 0;
+                        const timeB = b.requestedAt?.seconds || 0;
+                        return timeB - timeA;
+                    });
+                    
+                    // Update withdrawals table
+                    tbody.innerHTML = '';
+                    recentTbody.innerHTML = '';
+                    
+                    withdrawals.forEach((data, index) => {
                         const date = data.requestedAt?.toDate().toLocaleDateString() || 'N/A';
                         
                         let statusBadge = '';
@@ -606,6 +836,7 @@
                             statusBadge = '<span class="status-badge pending">Pending</span>';
                         }
                         
+                        // Add to main table
                         tbody.innerHTML += `
                             <tr>
                                 <td class="py-3">${data.amount.toLocaleString()} coins</td>
@@ -614,11 +845,81 @@
                                 <td class="py-3">${date}</td>
                             </tr>
                         `;
+                        
+                        // Add to recent withdrawals (first 5)
+                        if (index < 5) {
+                            recentTbody.innerHTML += `
+                                <div class="flex justify-between items-center p-3 bg-white rounded-lg mb-2">
+                                    <div>
+                                        <p class="font-semibold">${data.amount.toLocaleString()} coins</p>
+                                        <p class="text-sm text-gray-600">${data.method.toUpperCase()}</p>
+                                    </div>
+                                    <div>
+                                        ${statusBadge}
+                                        <p class="text-xs text-gray-500 mt-1">${date}</p>
+                                    </div>
+                                </div>
+                            `;
+                        }
                     });
+                    
+                    // Update today's earnings
+                    updateTodaysEarnings();
                 });
                 
             } catch (error) {
                 console.error('Error loading withdrawals:', error);
+                // Show empty state
+                document.getElementById('withdrawals-list').innerHTML = `
+                    <tr>
+                        <td colspan="4" class="text-center py-8 text-gray-400">
+                            <i class="fas fa-exclamation-circle text-2xl mb-2"></i>
+                            <p>Error loading withdrawals</p>
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        async function updateTodaysEarnings() {
+            try {
+                const today = new Date().toISOString().split('T')[0];
+                const todayEarningsContainer = document.getElementById('today-earnings');
+                
+                // Calculate today's earnings from visited sites
+                let todaysCoins = 0;
+                const todayVisited = visitedSites || [];
+                
+                todayVisited.forEach(siteIndex => {
+                    if (websites[siteIndex]) {
+                        todaysCoins += websites[siteIndex].reward || 0;
+                    }
+                });
+                
+                if (todaysCoins > 0) {
+                    todayEarningsContainer.innerHTML = `
+                        <div class="flex justify-between items-center p-3 bg-white rounded-lg">
+                            <div>
+                                <p class="font-semibold">Today's Earnings</p>
+                                <p class="text-sm text-gray-600">From ${todayVisited.length} websites</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-lg font-bold text-green-600">${todaysCoins} coins</p>
+                                <p class="text-sm text-gray-600">≈ ₹${((todaysCoins / (appConfig?.coinValueCoins || 1000)) * (appConfig?.coinValueInr || 10)).toFixed(2)}</p>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    todayEarningsContainer.innerHTML = `
+                        <div class="text-center py-8 text-gray-400">
+                            <i class="fas fa-coins text-2xl mb-2"></i>
+                            <p>No earnings today</p>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                console.error('Error updating today earnings:', error);
             }
         }
 
@@ -640,13 +941,12 @@
 
         function shareReferralLink() {
             const link = document.getElementById('referral-link').value;
-            const text = `Earn money by visiting websites! Use my referral link to get bonus coins on Visit & Earn! ${link}`;
             
             if (tg.isVersionAtLeast('6.0')) {
-                tg.shareUrl(text, link);
+                tg.shareUrl("Join Visit & Earn and earn money by visiting websites!", link);
             } else {
                 // Fallback for older versions
-                window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`, '_blank');
+                window.open(link, '_blank');
             }
         }
 
@@ -666,7 +966,10 @@
             document.getElementById(`${sectionId}-section`).classList.remove('hidden');
             
             // Set active nav item
-            document.querySelector(`[onclick="showSection('${sectionId}')"]`).classList.add('active');
+            const activeButton = document.querySelector(`[onclick="showSection('${sectionId}')"]`);
+            if (activeButton) {
+                activeButton.classList.add('active');
+            }
             
             // Update title
             const titles = {
@@ -678,6 +981,11 @@
             };
             
             document.getElementById('section-title').textContent = titles[sectionId] || 'Visit & Earn';
+            
+            // Load section-specific data
+            if (sectionId === 'withdraw' || sectionId === 'history') {
+                loadUserWithdrawals();
+            }
         }
 
         function showMainApp() {
@@ -693,14 +1001,16 @@
             
             // Telegram back button
             tg.BackButton.onClick(() => {
-                if (document.getElementById('visit-modal').classList.contains('hidden') &&
-                    document.getElementById('withdrawal-modal').classList.contains('hidden') &&
-                    document.getElementById('withdrawal-confirmation').classList.contains('hidden')) {
-                    showSection('home');
-                } else {
+                if (!document.getElementById('visit-modal').classList.contains('hidden')) {
                     closeVisitModal();
+                } else if (!document.getElementById('withdrawal-modal').classList.contains('hidden')) {
                     closeWithdrawalModal();
+                } else if (!document.getElementById('withdrawal-confirmation').classList.contains('hidden')) {
                     document.getElementById('withdrawal-confirmation').classList.add('hidden');
+                } else if (!document.getElementById('telegram-required-modal').classList.contains('hidden')) {
+                    // Do nothing for required modal
+                } else {
+                    showSection('home');
                 }
             });
         }
@@ -718,7 +1028,7 @@
             const toastMessage = document.getElementById('toast-message');
             
             toastMessage.textContent = message;
-            toast.className = `toast toast-${type}`;
+            toast.className = `toast ${type}`;
             
             toast.classList.add('show');
             
@@ -784,6 +1094,13 @@
             align-items: center;
             justify-content: center;
             font-size: 20px;
+            overflow: hidden;
+        }
+        
+        .user-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
         }
         
         .balance-card {
@@ -817,6 +1134,10 @@
             padding: 8px 12px;
             border-radius: 12px;
             transition: all 0.3s ease;
+            cursor: pointer;
+            background: none;
+            border: none;
+            outline: none;
         }
         
         .nav-item.active {
@@ -878,12 +1199,14 @@
             font-weight: 600;
             color: #1a1a1a;
             margin-bottom: 4px;
+            font-size: 14px;
         }
         
         .website-url {
             color: #6b7280;
             font-size: 12px;
             margin-bottom: 8px;
+            word-break: break-all;
         }
         
         .website-rewards {
@@ -909,6 +1232,7 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
+            font-size: 14px;
         }
         
         .btn-visit:hover {
@@ -924,6 +1248,7 @@
             border-radius: 8px;
             font-weight: 600;
             cursor: not-allowed;
+            font-size: 14px;
         }
         
         .modal-overlay {
@@ -992,7 +1317,7 @@
             transition: all 0.3s ease;
         }
         
-        .withdrawal-method:hover {
+        .withdrawal-method:hover, .withdrawal-method.selected {
             border-color: #667eea;
             background: #f9fafb;
         }
@@ -1065,11 +1390,11 @@
             transform: translateX(-50%) translateY(0);
         }
         
-        .toast-error {
+        .toast.error {
             background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
         }
         
-        .toast-warning {
+        .toast.warning {
             background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
         }
         
@@ -1127,11 +1452,45 @@
             border-radius: 3px;
             transition: width 0.3s ease;
         }
+        
+        input[type="radio"] {
+            width: 20px;
+            height: 20px;
+        }
+        
+        /* Hide radio button default styling */
+        input[type="radio"] {
+            appearance: none;
+            -webkit-appearance: none;
+            border: 2px solid #e5e7eb;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            position: relative;
+        }
+        
+        input[type="radio"]:checked {
+            border-color: #667eea;
+            background-color: #667eea;
+        }
+        
+        input[type="radio"]:checked::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: white;
+        }
     </style>
 </head>
 <body>
     <!-- Toast Notification -->
-    <div id="toast" class="toast">
+    <div id="toast" class="toast hidden">
         <i class="fas fa-check-circle mr-2"></i>
         <span id="toast-message">Operation successful!</span>
     </div>
@@ -1150,6 +1509,33 @@
         </div>
     </div>
     
+    <!-- Telegram Required Modal -->
+    <div id="telegram-required-modal" class="modal-overlay hidden">
+        <div class="modal-content p-8">
+            <div class="text-center">
+                <div class="w-20 h-20 bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <i class="fas fa-telegram text-white text-3xl"></i>
+                </div>
+                <h3 class="text-2xl font-bold mb-4">Telegram Required</h3>
+                <p class="text-gray-600 mb-6">
+                    This app works only inside Telegram. Please open it from a Telegram bot or channel.
+                </p>
+                <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-100 rounded-2xl p-4 mb-6">
+                    <p class="text-sm text-gray-600 mb-2">How to use:</p>
+                    <ol class="text-sm text-gray-600 text-left list-decimal list-inside space-y-1">
+                        <li>Open Telegram app</li>
+                        <li>Search for @VisitEarnBot</li>
+                        <li>Start the bot</li>
+                        <li>Click "Start Earning" button</li>
+                    </ol>
+                </div>
+                <button onclick="window.close()" class="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-xl font-bold">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+    
     <!-- Main App -->
     <div id="main-app" class="app-container hidden">
         <!-- Header -->
@@ -1159,7 +1545,7 @@
                     <h1 id="section-title" class="text-2xl font-bold">Visit & Earn</h1>
                     <p class="text-sm opacity-90">Earn money visiting websites</p>
                 </div>
-                <div class="user-avatar">
+                <div id="user-avatar" class="user-avatar">
                     <i class="fas fa-user"></i>
                 </div>
             </div>
@@ -1287,7 +1673,7 @@
                                     <tr>
                                         <td colspan="4" class="text-center py-8 text-gray-400">
                                             <i class="fas fa-wallet text-2xl mb-2"></i>
-                                            <p>No withdrawal history</p>
+                                            <p>Loading withdrawal history...</p>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -1369,7 +1755,7 @@
                             <div class="space-y-2" id="today-earnings">
                                 <div class="text-center py-8 text-gray-400">
                                     <i class="fas fa-coins text-2xl mb-2"></i>
-                                    <p>No earnings today</p>
+                                    <p>Loading today's earnings...</p>
                                 </div>
                             </div>
                         </div>
@@ -1379,7 +1765,7 @@
                             <div id="recent-withdrawals">
                                 <div class="text-center py-8 text-gray-400">
                                     <i class="fas fa-wallet text-2xl mb-2"></i>
-                                    <p>No withdrawals yet</p>
+                                    <p>Loading withdrawals...</p>
                                 </div>
                             </div>
                         </div>
@@ -1449,7 +1835,7 @@
                     </div>
                     
                     <p class="text-sm text-gray-600 text-center mb-6">
-                        Please wait while we track your visit. Do not close this window.
+                        Website opened in new tab. Please wait while we track your visit. Do not close this window.
                     </p>
                     
                     <button onclick="closeVisitModal()" class="w-full border-2 border-gray-300 text-gray-700 py-3 rounded-xl font-bold">
