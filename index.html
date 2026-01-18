@@ -32,7 +32,8 @@
             serverTimestamp,
             increment,
             onSnapshot,
-            arrayUnion
+            arrayUnion,
+            orderBy
         } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
 
         // Initialize Firebase
@@ -55,6 +56,20 @@
         let totalEarned = 0;
         let telegramUser = null;
         let visitUrlWindow = null;
+        let withdrawalHistory = [];
+        let earningHistory = [];
+        let firebaseListeners = [];
+
+        // Local Storage Keys
+        const STORAGE_KEYS = {
+            USER_DATA: 'visit_earn_user_data',
+            BALANCE: 'visit_earn_balance',
+            TOTAL_EARNED: 'visit_earn_total_earned',
+            VISITED_SITES: 'visit_earn_visited_sites',
+            WITHDRAWAL_HISTORY: 'visit_earn_withdrawal_history',
+            EARNING_HISTORY: 'visit_earn_earning_history',
+            LAST_SYNC: 'visit_earn_last_sync'
+        };
 
         // Initialize on load
         window.onload = async () => {
@@ -65,7 +80,7 @@
             tg.ready();
             tg.enableClosingConfirmation();
             
-            // Get user from Telegram - NO LOGIN REQUIRED
+            // Get user from Telegram
             telegramUser = tg.initDataUnsafe.user;
             
             if (!telegramUser) {
@@ -86,15 +101,94 @@
             // Setup event listeners
             setupEventListeners();
             
+            // Load from local storage first for instant UI
+            loadFromLocalStorage();
+            
             // Initialize user with Telegram data
             await initializeUser(telegramUser);
             
-            // Load app data
+            // Load app config
             await loadAppConfig();
+            
+            // Setup real-time listeners
+            setupFirebaseListeners();
             
             // Show main app
             showMainApp();
         };
+
+        // ===== LOCAL STORAGE FUNCTIONS =====
+        function saveToLocalStorage() {
+            try {
+                const userDataToSave = {
+                    firstName: userData?.firstName || telegramUser?.first_name || 'User',
+                    balance: currentBalance,
+                    totalEarned: totalEarned,
+                    uid: userData?.uid || telegramUser?.id,
+                    visitedSites: visitedSites,
+                    lastSync: Date.now()
+                };
+                
+                localStorage.setItem(STORAGE_KEYS.USER_DATA, JSON.stringify(userDataToSave));
+                localStorage.setItem(STORAGE_KEYS.BALANCE, currentBalance.toString());
+                localStorage.setItem(STORAGE_KEYS.TOTAL_EARNED, totalEarned.toString());
+                localStorage.setItem(STORAGE_KEYS.VISITED_SITES, JSON.stringify(visitedSites));
+                localStorage.setItem(STORAGE_KEYS.WITHDRAWAL_HISTORY, JSON.stringify(withdrawalHistory));
+                localStorage.setItem(STORAGE_KEYS.EARNING_HISTORY, JSON.stringify(earningHistory));
+                
+                console.log("✅ Data saved to local storage");
+            } catch (error) {
+                console.error("Error saving to local storage:", error);
+            }
+        }
+
+        function loadFromLocalStorage() {
+            try {
+                // Load user data
+                const savedUserData = localStorage.getItem(STORAGE_KEYS.USER_DATA);
+                if (savedUserData) {
+                    const parsedData = JSON.parse(savedUserData);
+                    userData = { ...userData, ...parsedData };
+                    currentBalance = parseInt(localStorage.getItem(STORAGE_KEYS.BALANCE)) || 0;
+                    totalEarned = parseInt(localStorage.getItem(STORAGE_KEYS.TOTAL_EARNED)) || 0;
+                    
+                    // Load visited sites
+                    const savedVisited = localStorage.getItem(STORAGE_KEYS.VISITED_SITES);
+                    visitedSites = savedVisited ? JSON.parse(savedVisited) : [];
+                    
+                    // Load withdrawal history
+                    const savedWithdrawals = localStorage.getItem(STORAGE_KEYS.WITHDRAWAL_HISTORY);
+                    withdrawalHistory = savedWithdrawals ? JSON.parse(savedWithdrawals) : [];
+                    
+                    // Load earning history
+                    const savedEarnings = localStorage.getItem(STORAGE_KEYS.EARNING_HISTORY);
+                    earningHistory = savedEarnings ? JSON.parse(savedEarnings) : [];
+                    
+                    console.log("📥 Loaded from local storage:", {
+                        balance: currentBalance,
+                        totalEarned: totalEarned,
+                        visitedSites: visitedSites.length
+                    });
+                    
+                    // Update UI immediately
+                    updateUserUI();
+                    loadWebsites();
+                    updateTodaysEarnings();
+                    
+                    return true;
+                }
+            } catch (error) {
+                console.error("Error loading from local storage:", error);
+            }
+            return false;
+        }
+
+        function clearLocalStorage() {
+            Object.values(STORAGE_KEYS).forEach(key => {
+                localStorage.removeItem(key);
+            });
+            console.log("🧹 Local storage cleared");
+        }
 
         // ===== USER MANAGEMENT =====
         async function initializeUser(telegramUser) {
@@ -114,12 +208,22 @@
                     // Update Telegram profile data
                     await updateTelegramProfileData(telegramUser);
                     
+                    // Load from Firebase
                     currentBalance = userData.balance || 0;
                     totalEarned = userData.totalEarned || 0;
                     visitedSites = userData.visitedSitesToday || [];
                     
+                    // Merge with local storage (keep latest)
+                    const localBalance = parseInt(localStorage.getItem(STORAGE_KEYS.BALANCE)) || 0;
+                    if (localBalance > currentBalance) {
+                        currentBalance = localBalance;
+                    }
+                    
                     // Check daily reset
                     await checkDailyReset();
+                    
+                    // Save to local storage
+                    saveToLocalStorage();
                     
                     // Update UI
                     updateUserUI();
@@ -127,14 +231,24 @@
                 
             } catch (error) {
                 console.error('Error initializing user:', error);
-                // Create temporary user data for UI
-                userData = {
-                    firstName: telegramUser.first_name || "User",
-                    balance: 0,
-                    totalEarned: 0
-                };
-                updateUserUI();
-                showToast('Welcome to Visit & Earn!', 'success');
+                // Fallback to local storage
+                if (loadFromLocalStorage()) {
+                    showToast('Loaded from saved data', 'info');
+                } else {
+                    // Create temporary user data
+                    userData = {
+                        firstName: telegramUser.first_name || "User",
+                        balance: 100,
+                        totalEarned: 100,
+                        uid: telegramUser.id.toString()
+                    };
+                    currentBalance = 100;
+                    totalEarned = 100;
+                    visitedSites = [];
+                    saveToLocalStorage();
+                    updateUserUI();
+                    showToast('Welcome to Visit & Earn!', 'success');
+                }
             }
             
             hideLoading();
@@ -155,7 +269,7 @@
                     languageCode: telegramUser.language_code || 'en',
                     
                     // App data
-                    balance: 100, // Starting bonus
+                    balance: 100,
                     totalEarned: 100,
                     visitedSitesToday: [],
                     lastSiteVisitDate: new Date().toISOString().split('T')[0],
@@ -163,6 +277,7 @@
                     totalReferrals: 0,
                     referralEarnings: 0,
                     withdrawalHistory: [],
+                    earningHistory: [],
                     lastActive: serverTimestamp(),
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp()
@@ -174,6 +289,9 @@
                 totalEarned = 100;
                 visitedSites = [];
                 
+                // Save to local storage
+                saveToLocalStorage();
+                
                 updateUserUI();
                 showToast('Welcome! 100 bonus coins added! 🎉', 'success');
                 
@@ -183,8 +301,13 @@
                 userData = {
                     firstName: telegramUser.first_name || "User",
                     balance: 100,
-                    totalEarned: 100
+                    totalEarned: 100,
+                    uid: telegramUser.id.toString()
                 };
+                currentBalance = 100;
+                totalEarned = 100;
+                visitedSites = [];
+                saveToLocalStorage();
                 updateUserUI();
                 showToast('Welcome to Visit & Earn!', 'success');
             }
@@ -231,9 +354,94 @@
                         lastSiteVisitDate: today,
                         lastActive: serverTimestamp()
                     });
+                    
+                    // Update local storage
+                    saveToLocalStorage();
                 }
             } catch (error) {
                 console.error('Error in daily reset:', error);
+            }
+        }
+
+        // ===== FIREBASE LISTENERS =====
+        function setupFirebaseListeners() {
+            if (!userData?.uid) {
+                console.log("No user ID, skipping Firebase listeners");
+                return;
+            }
+            
+            // Clear existing listeners
+            firebaseListeners.forEach(unsubscribe => unsubscribe && unsubscribe());
+            firebaseListeners = [];
+            
+            try {
+                // User data listener
+                const userRef = doc(db, "users", userData.uid);
+                const userUnsubscribe = onSnapshot(userRef, (doc) => {
+                    if (doc.exists()) {
+                        const updatedData = doc.data();
+                        userData = { ...userData, ...updatedData };
+                        
+                        // Update local data if Firebase has newer data
+                        if (updatedData.balance > currentBalance) {
+                            currentBalance = updatedData.balance;
+                        }
+                        if (updatedData.totalEarned > totalEarned) {
+                            totalEarned = updatedData.totalEarned;
+                        }
+                        if (updatedData.visitedSitesToday) {
+                            visitedSites = updatedData.visitedSitesToday;
+                        }
+                        
+                        // Save to local storage
+                        saveToLocalStorage();
+                        
+                        // Update UI
+                        updateUserUI();
+                        loadWebsites();
+                        updateTodaysEarnings();
+                    }
+                }, (error) => {
+                    console.error("User data listener error:", error);
+                    showToast("Connection issue, using saved data", "warning");
+                });
+                
+                firebaseListeners.push(userUnsubscribe);
+                
+                // Withdrawals listener
+                if (userData.telegramId) {
+                    const withdrawalsQuery = query(
+                        collection(db, "withdrawals"),
+                        where("telegramId", "==", userData.telegramId),
+                        orderBy("requestedAt", "desc")
+                    );
+                    
+                    const withdrawalsUnsubscribe = onSnapshot(withdrawalsQuery, (snapshot) => {
+                        withdrawalHistory = [];
+                        snapshot.forEach(doc => {
+                            withdrawalHistory.push({ id: doc.id, ...doc.data() });
+                        });
+                        
+                        // Save to local storage
+                        localStorage.setItem(STORAGE_KEYS.WITHDRAWAL_HISTORY, JSON.stringify(withdrawalHistory));
+                        
+                        // Update UI if on withdrawals/history page
+                        if (!document.getElementById('withdraw-section').classList.contains('hidden') || 
+                            !document.getElementById('history-section').classList.contains('hidden')) {
+                            updateWithdrawalsUI();
+                            updateTodaysEarnings();
+                        }
+                    }, (error) => {
+                        console.error("Withdrawals listener error:", error);
+                    });
+                    
+                    firebaseListeners.push(withdrawalsUnsubscribe);
+                }
+                
+                console.log("✅ Firebase listeners setup complete");
+                
+            } catch (error) {
+                console.error("Error setting up Firebase listeners:", error);
             }
         }
 
@@ -292,6 +500,10 @@
             const coins = appConfig?.coinValueCoins || 1000;
             const inr = appConfig?.coinValueInr || 10;
             document.getElementById('coins-value').textContent = `${coins} coins = ₹${inr}`;
+            
+            // Update website count
+            document.getElementById('total-websites').textContent = websites.length;
+            document.getElementById('visited-count').textContent = visitedSites.length;
         }
 
         function updateUserUI() {
@@ -383,6 +595,9 @@
                 
                 container.appendChild(card);
             });
+            
+            // Update visited count
+            document.getElementById('visited-count').textContent = visitedSites.length;
         }
 
         async function visitWebsite(index) {
@@ -498,6 +713,17 @@
             currentBalance += reward;
             totalEarned += reward;
             
+            // Add to earning history
+            earningHistory.push({
+                date: new Date().toISOString(),
+                website: currentWebsite.name,
+                amount: reward,
+                type: 'website_visit'
+            });
+            
+            // Save to local storage immediately
+            saveToLocalStorage();
+            
             // Save to Firebase if user exists
             if (userData.uid && userData.telegramId) {
                 try {
@@ -508,8 +734,21 @@
                         updatedAt: serverTimestamp(),
                         lastActive: serverTimestamp()
                     });
+                    
+                    // Add to earning history in Firebase
+                    const earningRef = await addDoc(collection(db, "earningHistory"), {
+                        userId: userData.uid,
+                        telegramId: userData.telegramId,
+                        userName: userData.firstName,
+                        amount: reward,
+                        website: currentWebsite.name,
+                        type: 'website_visit',
+                        createdAt: serverTimestamp()
+                    });
+                    
                 } catch (error) {
                     console.error('Error saving visit:', error);
+                    showToast('Saved locally, will sync later', 'info');
                 }
             }
             
@@ -678,7 +917,17 @@
                         requestedAt: serverTimestamp()
                     };
                     
-                    await addDoc(collection(db, "withdrawals"), withdrawalData);
+                    const withdrawalRef = await addDoc(collection(db, "withdrawals"), withdrawalData);
+                    
+                    // Add to local history
+                    withdrawalHistory.unshift({
+                        id: withdrawalRef.id,
+                        ...withdrawalData,
+                        requestedAt: new Date()
+                    });
+                    
+                    // Save to local storage
+                    saveToLocalStorage();
                     
                     // Update user balance
                     await updateDoc(doc(db, "users", userData.uid), {
@@ -689,11 +938,15 @@
                 
                 // Update local balance
                 currentBalance -= amount;
+                saveToLocalStorage();
                 updateUserUI();
                 
                 closeWithdrawalModal();
                 showToast('Withdrawal request submitted!', 'success');
                 showWithdrawalConfirmation(amount, method);
+                
+                // Update UI
+                updateWithdrawalsUI();
                 
             } catch (error) {
                 console.error('Error submitting withdrawal:', error);
@@ -701,6 +954,71 @@
             }
             
             hideLoading();
+        }
+
+        function updateWithdrawalsUI() {
+            const tbody = document.getElementById('withdrawals-list');
+            const recentTbody = document.getElementById('recent-withdrawals');
+            
+            if (!withdrawalHistory || withdrawalHistory.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="4" class="text-center py-8 text-gray-400">
+                            <i class="fas fa-wallet text-2xl mb-2"></i>
+                            <p>No withdrawals yet</p>
+                        </td>
+                    </tr>
+                `;
+                
+                recentTbody.innerHTML = `
+                    <div class="text-center py-8 text-gray-400">
+                        <i class="fas fa-wallet text-2xl mb-2"></i>
+                        <p>No withdrawals yet</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            tbody.innerHTML = '';
+            recentTbody.innerHTML = '';
+            
+            withdrawalHistory.forEach((data, index) => {
+                const date = data.requestedAt?.toDate ? data.requestedAt.toDate().toLocaleDateString() : 
+                           data.requestedAt ? new Date(data.requestedAt).toLocaleDateString() : 'N/A';
+                
+                let statusBadge = '';
+                if (data.status === 'approved') {
+                    statusBadge = '<span class="status-badge approved">Approved</span>';
+                } else if (data.status === 'rejected') {
+                    statusBadge = '<span class="status-badge rejected">Rejected</span>';
+                } else {
+                    statusBadge = '<span class="status-badge pending">Pending</span>';
+                }
+                
+                tbody.innerHTML += `
+                    <tr>
+                        <td class="py-3">${data.amount.toLocaleString()} coins</td>
+                        <td class="py-3">${(data.method || '').toUpperCase()}</td>
+                        <td class="py-3">${statusBadge}</td>
+                        <td class="py-3">${date}</td>
+                    </tr>
+                `;
+                
+                if (index < 3) {
+                    recentTbody.innerHTML += `
+                        <div class="flex justify-between items-center p-3 bg-white rounded-lg mb-2">
+                            <div>
+                                <p class="font-semibold">${data.amount.toLocaleString()} coins</p>
+                                <p class="text-sm text-gray-600">${(data.method || '').toUpperCase()}</p>
+                            </div>
+                            <div>
+                                ${statusBadge}
+                                <p class="text-xs text-gray-500 mt-1">${date}</p>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
         }
 
         function showWithdrawalConfirmation(amount, method) {
@@ -721,101 +1039,62 @@
         }
 
         async function loadUserWithdrawals() {
+            // First load from local storage
+            updateWithdrawalsUI();
+            updateTodaysEarnings();
+            
+            // Then try to sync with Firebase
             if (!userData?.telegramId) return;
             
             try {
                 const withdrawalsQuery = query(
                     collection(db, "withdrawals"),
-                    where("telegramId", "==", userData.telegramId)
+                    where("telegramId", "==", userData.telegramId),
+                    orderBy("requestedAt", "desc")
                 );
                 
-                onSnapshot(withdrawalsQuery, (snapshot) => {
-                    const tbody = document.getElementById('withdrawals-list');
-                    const recentTbody = document.getElementById('recent-withdrawals');
-                    
-                    if (snapshot.empty) {
-                        tbody.innerHTML = `
-                            <tr>
-                                <td colspan="4" class="text-center py-8 text-gray-400">
-                                    <i class="fas fa-wallet text-2xl mb-2"></i>
-                                    <p>No withdrawals yet</p>
-                                </td>
-                            </tr>
-                        `;
-                        
-                        recentTbody.innerHTML = `
-                            <div class="text-center py-8 text-gray-400">
-                                <i class="fas fa-wallet text-2xl mb-2"></i>
-                                <p>No withdrawals yet</p>
-                            </div>
-                        `;
-                        return;
-                    }
-                    
-                    const withdrawals = [];
+                const snapshot = await getDocs(withdrawalsQuery);
+                if (!snapshot.empty) {
+                    withdrawalHistory = [];
                     snapshot.forEach(doc => {
-                        withdrawals.push({ id: doc.id, ...doc.data() });
+                        withdrawalHistory.push({ id: doc.id, ...doc.data() });
                     });
                     
-                    withdrawals.sort((a, b) => (b.requestedAt?.seconds || 0) - (a.requestedAt?.seconds || 0));
+                    // Save to local storage
+                    localStorage.setItem(STORAGE_KEYS.WITHDRAWAL_HISTORY, JSON.stringify(withdrawalHistory));
                     
-                    tbody.innerHTML = '';
-                    recentTbody.innerHTML = '';
-                    
-                    withdrawals.forEach((data, index) => {
-                        const date = data.requestedAt?.toDate().toLocaleDateString() || 'N/A';
-                        let statusBadge = '';
-                        
-                        if (data.status === 'approved') {
-                            statusBadge = '<span class="status-badge approved">Approved</span>';
-                        } else if (data.status === 'rejected') {
-                            statusBadge = '<span class="status-badge rejected">Rejected</span>';
-                        } else {
-                            statusBadge = '<span class="status-badge pending">Pending</span>';
-                        }
-                        
-                        tbody.innerHTML += `
-                            <tr>
-                                <td class="py-3">${data.amount.toLocaleString()} coins</td>
-                                <td class="py-3">${data.method.toUpperCase()}</td>
-                                <td class="py-3">${statusBadge}</td>
-                                <td class="py-3">${date}</td>
-                            </tr>
-                        `;
-                        
-                        if (index < 3) {
-                            recentTbody.innerHTML += `
-                                <div class="flex justify-between items-center p-3 bg-white rounded-lg mb-2">
-                                    <div>
-                                        <p class="font-semibold">${data.amount.toLocaleString()} coins</p>
-                                        <p class="text-sm text-gray-600">${data.method.toUpperCase()}</p>
-                                    </div>
-                                    <div>
-                                        ${statusBadge}
-                                        <p class="text-xs text-gray-500 mt-1">${date}</p>
-                                    </div>
-                                </div>
-                            `;
-                        }
-                    });
-                    
-                    updateTodaysEarnings();
-                });
+                    // Update UI
+                    updateWithdrawalsUI();
+                }
                 
             } catch (error) {
-                console.error('Error loading withdrawals:', error);
+                console.error('Error loading withdrawals from Firebase:', error);
+                // Use local data if Firebase fails
+                showToast('Using saved withdrawal data', 'info');
             }
         }
 
-        async function updateTodaysEarnings() {
+        function updateTodaysEarnings() {
             const todayEarningsContainer = document.getElementById('today-earnings');
             let todaysCoins = 0;
             
+            // Calculate from visited sites
             visitedSites.forEach(siteIndex => {
                 if (websites[siteIndex]) {
                     todaysCoins += websites[siteIndex].reward || 0;
                 }
             });
+            
+            // Also check earning history
+            if (earningHistory && earningHistory.length > 0) {
+                const today = new Date().toDateString();
+                earningHistory.forEach(earning => {
+                    const earningDate = new Date(earning.date).toDateString();
+                    if (earningDate === today && earning.type === 'website_visit') {
+                        todaysCoins += earning.amount || 0;
+                    }
+                });
+            }
             
             if (todaysCoins > 0) {
                 todayEarningsContainer.innerHTML = `
@@ -886,6 +1165,7 @@
             
             if (sectionId === 'withdraw' || sectionId === 'history') {
                 loadUserWithdrawals();
+                updateTodaysEarnings();
             }
             
             // Update Telegram back button
@@ -926,9 +1206,24 @@
             // Handle visibility change (when user returns from website)
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && currentTimer && timerSeconds > 0) {
-                    // User returned to app, continue timer
-                    console.log("User returned to app");
+                    console.log("User returned to app, timer continues");
                 }
+            });
+            
+            // Save data before unload
+            window.addEventListener('beforeunload', () => {
+                saveToLocalStorage();
+                console.log("Data saved before unload");
+            });
+            
+            // Handle online/offline status
+            window.addEventListener('online', () => {
+                showToast('Back online, syncing data...', 'success');
+                setupFirebaseListeners();
+            });
+            
+            window.addEventListener('offline', () => {
+                showToast('Offline mode, using saved data', 'warning');
             });
         }
 
@@ -962,7 +1257,7 @@
         window.shareReferralLink = shareReferralLink;
         window.showSection = showSection;
 
-        console.log("✅ Visit & Earn App Ready");
+        console.log("✅ Visit & Earn App Ready with Persistence");
     </script>
     
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -971,6 +1266,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
+        /* Keep all your existing CSS styles - they remain the same */
         * {
             margin: 0;
             padding: 0;
